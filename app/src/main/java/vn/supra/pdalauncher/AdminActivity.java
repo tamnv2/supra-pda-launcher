@@ -172,7 +172,7 @@ public class AdminActivity extends Activity {
 
         root.addView(section("Dọn dẹp ứng dụng"));
         TextView cleanupHint = new TextView(this);
-        cleanupHint.setText("Chỉ hiển thị ứng dụng người dùng cài thêm. Launcher PDA và ứng dụng hệ thống được bảo vệ.");
+        cleanupHint.setText("Chỉ hiển thị ứng dụng người dùng cài thêm và có thể mở trực tiếp. Thành phần hệ thống/nền và Launcher PDA được bảo vệ.");
         cleanupHint.setTextSize(compact ? 11.5f : 12.5f);
         cleanupHint.setTextColor(0xFF64748B);
         cleanupHint.setPadding(dp(2), 0, dp(2), dp(8));
@@ -337,8 +337,7 @@ public class AdminActivity extends Activity {
         try {
             for (ApplicationInfo info : getPackageManager().getInstalledApplications(PackageManager.GET_META_DATA)) {
                 if (info == null) continue;
-                if (getPackageName().equals(info.packageName)) continue;
-                if ((info.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
+                if (!isSafeCleanupCandidate(info)) continue;
                 apps.add(info);
             }
         } catch (Exception e) {
@@ -371,6 +370,22 @@ public class AdminActivity extends Activity {
             rowLp.setMargins(0, 0, 0, dp(8));
             uninstallList.addView(row, rowLp);
         }
+    }
+
+    private boolean isSafeCleanupCandidate(ApplicationInfo info) {
+        if (info == null || info.packageName == null) return false;
+        if (getPackageName().equals(info.packageName)) return false;
+
+        int flags = info.flags;
+        if ((flags & ApplicationInfo.FLAG_SYSTEM) != 0) return false;
+        if ((flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0) return false;
+
+        Intent launch = getPackageManager().getLaunchIntentForPackage(info.packageName);
+        if (launch == null) return false;
+
+        ResolveInfo resolved = getPackageManager().resolveActivity(
+                launch, PackageManager.MATCH_DEFAULT_ONLY);
+        return resolved != null && resolved.activityInfo != null;
     }
 
     private View uninstallRow(final ApplicationInfo info) {
