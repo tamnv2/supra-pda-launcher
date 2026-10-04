@@ -161,9 +161,66 @@ public class AdminActivity extends Activity {
                     }
                 }));
 
+        root.addView(section("Cài đặt nhanh"));
+
+        root.addView(actionRow(android.R.drawable.ic_menu_manage,
+                "Wi-Fi",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        openSystemSettings(Settings.ACTION_WIFI_SETTINGS);
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_menu_day,
+                "Độ sáng màn hình",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        openSystemSettings(Settings.ACTION_DISPLAY_SETTINGS);
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_menu_rotate,
+                "Tự động xoay",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        openSystemSettings(Settings.ACTION_DISPLAY_SETTINGS);
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_lock_idle_low_battery,
+                "Tiết kiệm pin",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        openSystemSettings("android.settings.BATTERY_SAVER_SETTINGS");
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_menu_mylocation,
+                "Vị trí",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        openSystemSettings(Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+                    }
+                }));
+
+        root.addView(toggleRow("Hiển thị % pin", Prefs.isShowBattery(AdminActivity.this),
+                new CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                        Prefs.setShowBattery(AdminActivity.this, isChecked);
+                    }
+                }));
+
+        root.addView(toggleRow("Cảnh báo pin yếu", Prefs.isLowBatteryAlertEnabled(AdminActivity.this),
+                new CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                        Prefs.setLowBatteryAlertEnabled(AdminActivity.this, isChecked);
+                        if (!isChecked) BatteryAlertReceiver.cancel(AdminActivity.this);
+                    }
+                }));
+
         root.addView(section("Thiết lập PDA"));
         root.addView(actionRow(android.R.drawable.ic_menu_view,
-                "Chọn SUPRA PDA làm màn hình chính",
+                "Chọn Launcher PDA làm màn hình chính",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         Prefs.beginAdminSession(AdminActivity.this);
@@ -285,6 +342,45 @@ public class AdminActivity extends Activity {
         arrow.setGravity(Gravity.CENTER);
         row.addView(arrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
         return row;
+    }
+
+    private View toggleRow(String title, boolean checked, CompoundButton.OnCheckedChangeListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(13), dp(12), dp(13));
+        row.setBackground(cardBackground(0xFFFFFFFF, 14f));
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowLp.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(rowLp);
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTextColor(0xFF263445);
+        t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Switch toggle = new Switch(this);
+        toggle.setChecked(checked);
+        toggle.setOnCheckedChangeListener(listener);
+        row.addView(toggle);
+        return row;
+    }
+
+    private void openSystemSettings(String action) {
+        Prefs.beginAdminSession(this);
+        try {
+            Intent intent = new Intent(action);
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+            } else {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            }
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_SETTINGS));
+        }
     }
 
     private TextView statusChip(String label) {
