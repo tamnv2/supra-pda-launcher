@@ -164,6 +164,9 @@ public class MainActivity extends Activity {
         brandIconLp.setMargins(0, 0, dp(9), 0);
         topRow.addView(brandIcon, brandIconLp);
 
+        LinearLayout titleBlock = new LinearLayout(this);
+        titleBlock.setOrientation(LinearLayout.VERTICAL);
+
         TextView title = new TextView(this);
         title.setText("Launcher PDA");
         title.setTextSize(compact ? 19f : 21f);
@@ -171,7 +174,19 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        topRow.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        titleBlock.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView version = new TextView(this);
+        version.setText("Phiên bản " + BuildConfig.VERSION_NAME);
+        version.setTextSize(compact ? 10.5f : 11f);
+        version.setTextColor(0xFF64748B);
+        version.setSingleLine(true);
+        titleBlock.addView(version, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        topRow.addView(titleBlock, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         ImageView settings = new ImageView(this);
         settings.setImageResource(android.R.drawable.ic_menu_preferences);
@@ -278,6 +293,51 @@ public class MainActivity extends Activity {
         scroll.addView(appArea);
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        deviceIdentityCard = new LinearLayout(this);
+        deviceIdentityCard.setOrientation(LinearLayout.VERTICAL);
+        deviceIdentityCard.setGravity(Gravity.CENTER);
+        deviceIdentityCard.setPadding(dp(10), dp(7), dp(10), dp(7));
+        deviceIdentityCard.setBackground(roundRect(0xFFFFFFFF, 13f, true));
+        deviceIdentityCard.setClickable(true);
+        deviceIdentityCard.setFocusable(true);
+        deviceIdentityCard.setContentDescription("Mã thiết bị PDA");
+        deviceIdentityCard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                requestPhoneStatePermission(true);
+            }
+        });
+
+        deviceBarcode = new ImageView(this);
+        deviceBarcode.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        deviceBarcode.setAdjustViewBounds(false);
+        deviceIdentityCard.addView(deviceBarcode, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(compact ? 44 : 50)));
+
+        deviceIdText = new TextView(this);
+        deviceIdText.setGravity(Gravity.CENTER);
+        deviceIdText.setTextSize(compact ? 11.5f : 12.5f);
+        deviceIdText.setTextColor(0xFF152238);
+        deviceIdText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        deviceIdText.setSingleLine(true);
+        deviceIdText.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        deviceIdText.setPadding(dp(2), dp(4), dp(2), 0);
+        deviceIdentityCard.addView(deviceIdText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        deviceIdHint = new TextView(this);
+        deviceIdHint.setGravity(Gravity.CENTER);
+        deviceIdHint.setTextSize(compact ? 9f : 9.5f);
+        deviceIdHint.setTextColor(0xFF64748B);
+        deviceIdHint.setSingleLine(true);
+        deviceIdHint.setEllipsize(TextUtils.TruncateAt.END);
+        deviceIdentityCard.addView(deviceIdHint, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout.LayoutParams identityLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        identityLp.setMargins(0, dp(4), 0, dp(2));
+        root.addView(deviceIdentityCard, identityLp);
 
         TextView footer = new TextView(this);
         footer.setText("Phát triển hệ thống - tamnv2 | Pick Pack 1291");
@@ -576,6 +636,89 @@ public class MainActivity extends Activity {
             battery.setTextColor(0xFFC46A1A);
         } else {
             battery.setTextColor(0xFF16784A);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_PHONE_STATE) {
+            updateDeviceIdentityUi();
+        }
+    }
+
+    private void maybeRequestPhoneStatePermission() {
+        if (!DeviceIdentifier.isTargetPda()) return;
+        DeviceIdentifier.Result result = DeviceIdentifier.resolve(this);
+        if (result.isAvailable()) return;
+        requestPhoneStatePermission(false);
+    }
+
+    private void requestPhoneStatePermission(boolean force) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            updateDeviceIdentityUi();
+            return;
+        }
+
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
+            updateDeviceIdentityUi();
+            return;
+        }
+
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("device_identifier_probe", MODE_PRIVATE);
+        boolean alreadyRequested = prefs.getBoolean("phone_state_requested", false);
+        if (!force && alreadyRequested) {
+            updateDeviceIdentityUi();
+            return;
+        }
+
+        prefs.edit().putBoolean("phone_state_requested", true).apply();
+        requestPermissions(
+                new String[] { Manifest.permission.READ_PHONE_STATE },
+                REQUEST_PHONE_STATE);
+    }
+
+    private void updateDeviceIdentityUi() {
+        if (deviceIdentityCard == null || deviceIdText == null
+                || deviceIdHint == null || deviceBarcode == null) return;
+
+        DeviceIdentifier.Result result = DeviceIdentifier.resolve(this);
+
+        if (result.isAvailable()) {
+            deviceIdText.setText(result.label + ": " + result.value);
+            deviceIdHint.setText("Quét mã vạch hoặc đọc trực tiếp số thiết bị");
+            deviceBarcode.setVisibility(View.VISIBLE);
+
+            if (!result.value.equals(lastDeviceBarcodeValue)) {
+                try {
+                    int barcodeWidth = dp(Math.max(240, screenWidthDp() - 48));
+                    int barcodeHeight = dp(isCompactWidth() ? 44 : 50);
+                    deviceBarcode.setImageBitmap(
+                            BarcodeUtils.code128(result.value, barcodeWidth, barcodeHeight));
+                    lastDeviceBarcodeValue = result.value;
+                } catch (Exception e) {
+                    deviceBarcode.setImageDrawable(null);
+                    deviceBarcode.setVisibility(View.GONE);
+                    deviceIdHint.setText("Đã đọc được số thiết bị nhưng chưa tạo được mã vạch");
+                }
+            }
+            return;
+        }
+
+        lastDeviceBarcodeValue = null;
+        deviceBarcode.setImageDrawable(null);
+        deviceBarcode.setVisibility(View.GONE);
+        deviceIdText.setText(result.label + ": Không đọc được");
+
+        boolean missingPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                != PackageManager.PERMISSION_GRANTED;
+        if (missingPermission) {
+            deviceIdHint.setText("Chạm vào đây để cấp quyền Điện thoại và thử lại");
+        } else {
+            deviceIdHint.setText(result.detail + " • firmware có thể đang hạn chế quyền");
         }
     }
 
