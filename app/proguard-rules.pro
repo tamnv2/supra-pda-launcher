@@ -1,0 +1,1 @@
+-keep class vn.supra.pdalauncher.** { *; }
