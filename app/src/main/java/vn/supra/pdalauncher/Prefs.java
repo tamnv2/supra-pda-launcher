@@ -7,7 +7,7 @@ import java.util.Set;
 
 final class Prefs {
     private static final String NAME = "launcher_prefs";
-    private static final String KEY_ALLOWED = "allowed_packages";
+    static final String KEY_ALLOWED = "allowed_packages";
     private static final String KEY_ADMIN_UNTIL = "admin_until";
     private static final String KEY_SHOW_BATTERY = "show_battery";
     private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
@@ -17,6 +17,10 @@ final class Prefs {
     private static final String KEY_UNINSTALL_PACKAGE = "uninstall_package";
 
     private Prefs() {}
+
+    static SharedPreferences preferences(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE);
+    }
 
     static Set<String> getAllowed(Context c) {
         Set<String> s = c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getStringSet(KEY_ALLOWED, null);
