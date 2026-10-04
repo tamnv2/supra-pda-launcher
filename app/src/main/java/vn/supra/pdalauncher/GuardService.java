@@ -15,6 +15,7 @@ public class GuardService extends AccessibilityService {
         if (isAlwaysAllowedSystem(pkg)) return;
         if (Prefs.getAllowed(this).contains(pkg)) return;
         if (Prefs.isAdminSession(this) && isAdminSystemPackage(pkg)) return;
+        if (Prefs.isTimeFixSession(this) && "com.android.settings".equals(pkg)) return;
         performGlobalAction(GLOBAL_ACTION_HOME);
     }
 
