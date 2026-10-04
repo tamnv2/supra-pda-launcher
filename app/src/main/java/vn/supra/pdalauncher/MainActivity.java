@@ -1,5 +1,6 @@
 package vn.supra.pdalauncher;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
@@ -52,6 +53,11 @@ public class MainActivity extends Activity {
     private TextView battery;
     private LinearLayout timeWarningCard;
     private TextView timeWarningText;
+    private LinearLayout deviceIdentityCard;
+    private ImageView deviceBarcode;
+    private TextView deviceIdText;
+    private TextView deviceIdHint;
+    private String lastDeviceBarcodeValue;
     private boolean systemTimeInvalid;
     private final Handler handler = new Handler();
     private boolean batteryReceiverRegistered;
@@ -88,6 +94,8 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         PasswordStore.ensureInitialized(this);
         buildUi();
+        updateDeviceIdentityUi();
+        maybeRequestPhoneStatePermission();
         applyImmersive();
     }
 
@@ -96,6 +104,7 @@ public class MainActivity extends Activity {
         Prefs.clearTimeFixSession(this);
         loadAllowedApps();
         refreshTimeState();
+        updateDeviceIdentityUi();
         applyImmersive();
 
         handler.removeCallbacks(clockTick);
