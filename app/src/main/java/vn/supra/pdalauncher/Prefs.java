@@ -11,6 +11,7 @@ final class Prefs {
     private static final String KEY_ADMIN_UNTIL = "admin_until";
     private static final String KEY_SHOW_BATTERY = "show_battery";
     private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
+    private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
 
     private Prefs() {}
 
@@ -54,5 +55,19 @@ final class Prefs {
     static void setLowBatteryAlertEnabled(Context c, boolean enabled) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
                 .putBoolean(KEY_LOW_BATTERY_ALERT, enabled).apply();
+    }
+
+    static void beginTimeFixSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_TIME_FIX_UNTIL, System.currentTimeMillis() + 90L * 1000L).apply();
+    }
+
+    static boolean isTimeFixSession(Context c) {
+        long until = c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getLong(KEY_TIME_FIX_UNTIL, 0L);
+        return System.currentTimeMillis() < until;
+    }
+
+    static void clearTimeFixSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_TIME_FIX_UNTIL).apply();
     }
 }
