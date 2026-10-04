@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
             int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
             int percent = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : -1;
-            updateBatteryUi(percent);
+            updateBatteryUi(percent, isCharging(intent));
         }
     };
 
@@ -118,7 +118,7 @@ public class MainActivity extends Activity {
                 int level = sticky.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
                 int scale = sticky.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
                 int percent = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : -1;
-                updateBatteryUi(percent);
+                updateBatteryUi(percent, isCharging(sticky));
             }
         }
     }
@@ -191,9 +191,11 @@ public class MainActivity extends Activity {
         metaRow.setPadding(brandSize + dp(9), dp(4), 0, dp(9));
 
         clock = new TextView(this);
-        clock.setTextSize(compact ? 11.5f : 12f);
-        clock.setTextColor(0xFF64748B);
+        clock.setTextSize(compact ? 13f : 14f);
+        clock.setTextColor(0xFF475569);
+        clock.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         clock.setSingleLine(true);
+        clock.setEllipsize(TextUtils.TruncateAt.END);
         metaRow.addView(clock, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         battery = new TextView(this);
@@ -544,7 +546,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void updateBatteryUi(int level) {
+    private boolean isCharging(Intent batteryIntent) {
+        if (batteryIntent == null) return false;
+        int status = batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
+        int plugged = batteryIntent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+        return plugged > 0
+                || status == BatteryManager.BATTERY_STATUS_CHARGING
+                || status == BatteryManager.BATTERY_STATUS_FULL;
+    }
+
+    private void updateBatteryUi(int level, boolean charging) {
         if (battery == null) return;
         if (!Prefs.isShowBattery(this)) {
             battery.setVisibility(View.GONE);
@@ -552,7 +564,12 @@ public class MainActivity extends Activity {
         }
 
         battery.setVisibility(View.VISIBLE);
-        battery.setText(level >= 0 ? ("Pin " + level + "%") : "Pin --%");
+        if (charging) {
+            battery.setText(level >= 0 ? ("Đang sạc " + level + "%") : "Đang sạc --%");
+        } else {
+            battery.setText(level >= 0 ? ("Pin " + level + "%") : "Pin --%");
+        }
+
         if (level >= 0 && level <= 15) {
             battery.setTextColor(0xFFC62828);
         } else if (level >= 0 && level <= 30) {
