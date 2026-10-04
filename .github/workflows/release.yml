@@ -1,6 +1,9 @@
 name: Release APK
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -11,10 +14,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,17 +39,25 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="${{ inputs.version }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version must match x.y.z"
             exit 1
           fi
+
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Restore signing configuration
+      - name: Restore signing key
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -49,27 +65,49 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_B64"
-          test -n "$STORE_PASS"
-          test -n "$KEY_ALIAS"
-          test -n "$KEY_PASS"
+          test -n "$KEYSTORE_B64" || { echo "Missing ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "$STORE_PASS" || { echo "Missing ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "Missing ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASS" || { echo "Missing ANDROID_KEY_PASSWORD"; exit 1; }
+
           printf '%s' "$KEYSTORE_B64" | base64 -d > release.jks
-          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n'             "$STORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > keystore.properties
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > keystore.properties
 
-      - name: Build signed release APK
+      - name: Build signed APK
         run: |
-          gradle :app:assembleRelease --no-daemon --stacktrace             -PVERSION_NAME="${{ steps.version.outputs.version }}"             -PVERSION_CODE="${{ steps.version.outputs.version_code }}"
+          gradle :app:assembleRelease --no-daemon --stacktrace \
+            -PVERSION_NAME="${{ steps.version.outputs.version }}" \
+            -PVERSION_CODE="${{ steps.version.outputs.version_code }}"
 
-      - name: Prepare APK
+      - name: Verify and prepare release files
         shell: bash
         run: |
-          mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk             "dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"
+          SRC="app/build/outputs/apk/release/app-release.apk"
+          test -f "$SRC"
 
-      - name: Publish release
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -n "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
+          "$APKSIGNER" verify --verbose --print-certs "$SRC"
+
+          mkdir -p dist
+          APK="dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"
+          cp "$SRC" "$APK"
+          sha256sum "$APK" > "$APK.sha256"
+
+      - name: Publish GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          gh release create "$TAG"             "dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"             --target "${{ github.sha }}"             --title "SUPRA PDA Launcher $TAG"             --generate-notes
+          TAG="${{ steps.version.outputs.tag }}"
+          APK="dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
+          else
+            gh release create "$TAG" "$APK" "$APK.sha256" \
+              --target "${{ github.sha }}" \
+              --title "SUPRA PDA Launcher $TAG" \
+              --generate-notes
+          fi

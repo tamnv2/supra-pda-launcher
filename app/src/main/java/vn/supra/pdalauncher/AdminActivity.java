@@ -83,7 +83,7 @@ public class AdminActivity extends Activity {
         title.setTextColor(0xFF152238);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         TextView subtitle = new TextView(this);
-        subtitle.setText("SUPRA PDA Launcher  •  v" + BuildConfig.VERSION_NAME);
+        subtitle.setText("v" + BuildConfig.VERSION_NAME);
         subtitle.setTextSize(12.5f);
         subtitle.setTextColor(0xFF718096);
         titleBox.addView(title);
@@ -117,7 +117,7 @@ public class AdminActivity extends Activity {
         statusLp.setMargins(0, 0, 0, dp(18));
         root.addView(statusCard, statusLp);
 
-        root.addView(section("Ứng dụng hiển thị", "Bật hoặc tắt là tự động lưu ngay."));
+        root.addView(section("Ứng dụng hiển thị"));
 
         LinearLayout appList = new LinearLayout(this);
         appList.setOrientation(LinearLayout.VERTICAL);
@@ -145,28 +145,25 @@ public class AdminActivity extends Activity {
         }
         root.addView(appList);
 
-        root.addView(section("Bảo mật", "Quản lý quyền truy cập phần cài đặt."));
+        root.addView(section("Bảo mật"));
         root.addView(actionRow(android.R.drawable.ic_lock_lock,
                 "Đổi mật khẩu quản trị",
-                "Thay mật khẩu đang sử dụng trên PDA.",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) { showChangePassword(); }
                 }));
 
-        root.addView(section("Cập nhật", "Kiểm tra bản phát hành mới từ GitHub Releases."));
+        root.addView(section("Cập nhật"));
         root.addView(actionRow(android.R.drawable.ic_popup_sync,
                 "Kiểm tra cập nhật",
-                "Tải bản APK mới và mở trình cài đặt Android.",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         UpdateManager.check(AdminActivity.this, true);
                     }
                 }));
 
-        root.addView(section("Thiết lập PDA", "Các thiết lập hệ thống chỉ mở trong phiên quản trị."));
+        root.addView(section("Thiết lập PDA"));
         root.addView(actionRow(android.R.drawable.ic_menu_view,
                 "Chọn SUPRA PDA làm màn hình chính",
-                "Đặt Launcher này làm Home mặc định.",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         Prefs.beginAdminSession(AdminActivity.this);
@@ -177,7 +174,6 @@ public class AdminActivity extends Activity {
 
         root.addView(actionRow(android.R.drawable.ic_secure,
                 "Bật / kiểm tra chống lách",
-                "Tự đưa người dùng về Home khi mở app ngoài danh sách.",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         Prefs.beginAdminSession(AdminActivity.this);
@@ -187,20 +183,12 @@ public class AdminActivity extends Activity {
 
         root.addView(actionRow(android.R.drawable.ic_menu_preferences,
                 "Mở Cài đặt Android",
-                "Chỉ dùng khi quản trị viên cần cấu hình PDA.",
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         Prefs.beginAdminSession(AdminActivity.this);
                         startActivity(new Intent(Settings.ACTION_SETTINGS));
                     }
                 }));
-
-        TextView note = new TextView(this);
-        note.setText("Lưu ý: bản này dùng Custom Launcher + Accessibility. Trên PDA không có Device Owner, Android vẫn có một số đường hệ thống không thể khóa tuyệt đối ở cấp ứng dụng.");
-        note.setTextSize(11.5f);
-        note.setTextColor(0xFF7C8794);
-        note.setPadding(dp(4), dp(16), dp(4), 0);
-        root.addView(note);
 
         setContentView(scroll);
     }
@@ -244,7 +232,7 @@ public class AdminActivity extends Activity {
         return row;
     }
 
-    private View section(String title, String subtitle) {
+    private View section(String title) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(2), dp(20), dp(2), dp(10));
@@ -255,17 +243,10 @@ public class AdminActivity extends Activity {
         t.setTextColor(0xFF203040);
         t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         box.addView(t);
-
-        TextView s = new TextView(this);
-        s.setText(subtitle);
-        s.setTextSize(12f);
-        s.setTextColor(0xFF7A8795);
-        s.setPadding(0, dp(2), 0, 0);
-        box.addView(s);
         return box;
     }
 
-    private View actionRow(int iconRes, String title, String subtitle, View.OnClickListener listener) {
+    private View actionRow(int iconRes, String title, View.OnClickListener listener) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -294,13 +275,7 @@ public class AdminActivity extends Activity {
         t.setTextSize(14.5f);
         t.setTextColor(0xFF263445);
         t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        TextView s = new TextView(this);
-        s.setText(subtitle);
-        s.setTextSize(11.5f);
-        s.setTextColor(0xFF7A8795);
-        s.setPadding(0, dp(2), 0, 0);
         textBox.addView(t);
-        textBox.addView(s);
         row.addView(textBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView arrow = new TextView(this);

@@ -2,26 +2,47 @@
 
 ## CI build
 
-Every push or pull request to `main` runs **Android CI** and produces a temporary debug APK artifact.
+Every push or pull request to `main` runs **Android CI**.
 
-## Signed release
+Artifacts:
+- `supra-pda-launcher-debug`
+- `supra-pda-launcher-release-unsigned`
 
-The **Release APK** workflow builds an APK signed with one stable production key and publishes it to GitHub Releases.
+CI uses Gradle 8.9 through `gradle/actions/setup-gradle`, so a Gradle Wrapper is not required for GitHub Actions.
 
-Required repository secrets:
+## One-time signing setup
+
+Create these repository secrets in:
+
+**Settings → Secrets and variables → Actions → New repository secret**
 
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-Never commit the keystore or signing passwords to the repository.
+The production keystore must stay the same for all future versions so Android can update the installed app.
+
+## Signed release
+
+The **Release APK** workflow:
+
+1. Restores the signing key from GitHub Actions Secrets.
+2. Builds the signed release APK.
+3. Verifies the APK signature with `apksigner`.
+4. Creates a SHA-256 checksum.
+5. Publishes both files to GitHub Releases.
+
+It can run in either way:
+
+- Push a tag such as `v0.3.0`.
+- GitHub web → **Actions → Release APK → Run workflow** → enter `0.3.0`.
 
 ## Versioning
 
-Release workflow accepts `x.y.z`, for example `0.3.0`.
+Version format: `x.y.z`.
 
-Version code is calculated as:
+Version code:
 
 `major * 10000 + minor * 100 + patch`
 
@@ -33,13 +54,13 @@ Examples:
 
 ## In-app update
 
-Admin Settings → **Kiểm tra cập nhật** checks the latest GitHub Release.
+**Cài đặt quản trị → Kiểm tra cập nhật** checks the latest GitHub Release.
 
-If a newer APK exists:
+When a newer release exists:
 
-1. The launcher downloads the release APK.
+1. The launcher downloads the APK.
 2. Android may request permission for SUPRA PDA to install unknown apps.
-3. Android opens the system package installer.
-4. The update installs over the existing app only when package name and signing key match.
+3. Android opens the package installer.
+4. The APK updates over the installed version when the package name and signing key match.
 
-The application ID must remain `vn.supra.pdalauncher`.
+Application ID must remain `vn.supra.pdalauncher`.
