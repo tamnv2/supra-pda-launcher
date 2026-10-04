@@ -12,6 +12,7 @@ final class Prefs {
     private static final String KEY_SHOW_BATTERY = "show_battery";
     private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
     private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
+    private static final String KEY_UPDATE_UNTIL = "update_until";
 
     private Prefs() {}
 
@@ -69,5 +70,21 @@ final class Prefs {
 
     static void clearTimeFixSession(Context c) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_TIME_FIX_UNTIL).apply();
+    }
+
+    static void beginUpdateSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_UPDATE_UNTIL, System.currentTimeMillis() + 3L * 60L * 1000L).apply();
+    }
+
+    static boolean isUpdateSession(Context c) {
+        long until = c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getLong(KEY_UPDATE_UNTIL, 0L);
+        long now = System.currentTimeMillis();
+        long remaining = until - now;
+        return remaining > 0L && remaining <= 3L * 60L * 1000L;
+    }
+
+    static void clearUpdateSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UPDATE_UNTIL).apply();
     }
 }
