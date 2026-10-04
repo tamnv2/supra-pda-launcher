@@ -13,6 +13,7 @@ final class Prefs {
     private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
     private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
     private static final String KEY_UPDATE_UNTIL = "update_until";
+    private static final String KEY_UNINSTALL_UNTIL = "uninstall_until";
 
     private Prefs() {}
 
@@ -86,5 +87,21 @@ final class Prefs {
 
     static void clearUpdateSession(Context c) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UPDATE_UNTIL).apply();
+    }
+
+    static void beginUninstallSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_UNINSTALL_UNTIL, System.currentTimeMillis() + 90L * 1000L).apply();
+    }
+
+    static boolean isUninstallSession(Context c) {
+        long until = c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getLong(KEY_UNINSTALL_UNTIL, 0L);
+        long now = System.currentTimeMillis();
+        long remaining = until - now;
+        return remaining > 0L && remaining <= 90L * 1000L;
+    }
+
+    static void clearUninstallSession(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UNINSTALL_UNTIL).apply();
     }
 }
