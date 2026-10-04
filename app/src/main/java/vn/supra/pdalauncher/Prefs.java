@@ -14,6 +14,7 @@ final class Prefs {
     private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
     private static final String KEY_UPDATE_UNTIL = "update_until";
     private static final String KEY_UNINSTALL_UNTIL = "uninstall_until";
+    private static final String KEY_UNINSTALL_PACKAGE = "uninstall_package";
 
     private Prefs() {}
 
@@ -89,19 +90,28 @@ final class Prefs {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UPDATE_UNTIL).apply();
     }
 
-    static void beginUninstallSession(Context c) {
+    static void beginUninstallSession(Context c, String packageName) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
-                .putLong(KEY_UNINSTALL_UNTIL, System.currentTimeMillis() + 90L * 1000L).apply();
+                .putLong(KEY_UNINSTALL_UNTIL, System.currentTimeMillis() + 90L * 1000L)
+                .putString(KEY_UNINSTALL_PACKAGE, packageName == null ? "" : packageName)
+                .apply();
     }
 
-    static boolean isUninstallSession(Context c) {
+    static boolean isUninstallPackageAllowed(Context c, String packageName) {
         long until = c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getLong(KEY_UNINSTALL_UNTIL, 0L);
         long now = System.currentTimeMillis();
-        long remaining = until - now;
-        return remaining > 0L && remaining <= 90L * 1000L;
+        String allowed = c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_UNINSTALL_PACKAGE, "");
+        return until > now
+                && until - now <= 90L * 1000L
+                && packageName != null
+                && packageName.equals(allowed);
     }
 
     static void clearUninstallSession(Context c) {
-        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UNINSTALL_UNTIL).apply();
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .remove(KEY_UNINSTALL_UNTIL)
+                .remove(KEY_UNINSTALL_PACKAGE)
+                .apply();
     }
 }
