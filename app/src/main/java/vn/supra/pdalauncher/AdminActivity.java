@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Set;
 
 public class AdminActivity extends Activity {
+    private static final int REQUEST_UNINSTALL_APP = 3210;
     private Set<String> allowed;
     private TextView statusLauncher;
     private TextView statusGuard;
@@ -53,6 +54,17 @@ public class AdminActivity extends Activity {
         super.onResume();
         refreshStatus();
         refreshUninstallableApps();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_UNINSTALL_APP) {
+            Prefs.clearUninstallSession(this);
+            refreshUninstallableApps();
+            Toast.makeText(this,
+                    resultCode == Activity.RESULT_OK ? "Đã gỡ cài đặt." : "Đã đóng trình gỡ cài đặt.",
+                    Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override public void onBackPressed() {
@@ -421,12 +433,38 @@ public class AdminActivity extends Activity {
 
     private void launchUninstall(String packageName) {
         Prefs.beginAdminSession(this);
-        try {
-            Intent uninstall = new Intent(Intent.ACTION_DELETE);
+        Prefs.clearUninstallSession(this);
+
+        Intent uninstall = new Intent(Intent.ACTION_UNINSTALL_PACKAGE);
+        uninstall.setData(Uri.parse("package:" + packageName));
+        uninstall.putExtra(Intent.EXTRA_RETURN_RESULT, true);
+
+        ResolveInfo handler = getPackageManager().resolveActivity(
+                uninstall, PackageManager.MATCH_DEFAULT_ONLY);
+
+        if (handler == null || handler.activityInfo == null) {
+            uninstall = new Intent(Intent.ACTION_DELETE);
             uninstall.setData(Uri.parse("package:" + packageName));
-            startActivity(uninstall);
+            handler = getPackageManager().resolveActivity(
+                    uninstall, PackageManager.MATCH_DEFAULT_ONLY);
+        }
+
+        if (handler == null || handler.activityInfo == null) {
+            Toast.makeText(this,
+                    "PDA không tìm thấy trình gỡ cài đặt.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Prefs.beginUninstallSession(this, handler.activityInfo.packageName);
+
+        try {
+            startActivityForResult(uninstall, REQUEST_UNINSTALL_APP);
         } catch (Exception e) {
-            Toast.makeText(this, "Không mở được trình gỡ cài đặt.", Toast.LENGTH_LONG).show();
+            Prefs.clearUninstallSession(this);
+            Toast.makeText(this,
+                    "Không mở được trình gỡ cài đặt: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
