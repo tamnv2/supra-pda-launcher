@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +26,8 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Build debug and release variants
+        run: gradle :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -35,4 +35,12 @@ jobs:
           name: supra-pda-launcher-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload unsigned release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: supra-pda-launcher-release-unsigned
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: warn
           retention-days: 7
