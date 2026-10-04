@@ -23,7 +23,7 @@ Custom Android Launcher dành cho PDA kho SUPRA.
 
 GitHub Actions:
 - `build.yml`: build APK kiểm thử cho push/PR.
-- `release.yml`: build APK release ký bằng GitHub Actions Secrets khi tạo tag `v*`.
+- `release.yml`: build APK release đã ký, kiểm tra chữ ký, tạo SHA-256 và phát hành GitHub Release khi push tag `v*` hoặc chạy thủ công từ tab Actions.
 
 > Không commit keystore hoặc mật khẩu ký APK vào repository.
 
@@ -31,6 +31,6 @@ GitHub Actions:
 
 Ứng dụng có thể kiểm tra GitHub Releases để phát hiện phiên bản mới. Vì Launcher không phải Device Owner, Android vẫn yêu cầu người dùng xác nhận cài APK cập nhật.
 
-## Bảo mật
+## Signing
 
-Repository không được chứa khóa ký APK, mật khẩu thật hoặc secret vận hành. Các secret release phải lưu trong **Settings → Secrets and variables → Actions**.
+Repo có thể giữ ở chế độ public. Keystore và mật khẩu ký APK không commit vào source; 4 giá trị signing được lưu trong **Settings → Secrets and variables → Actions**.
