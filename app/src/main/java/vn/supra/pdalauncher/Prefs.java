@@ -9,6 +9,8 @@ final class Prefs {
     private static final String NAME = "launcher_prefs";
     private static final String KEY_ALLOWED = "allowed_packages";
     private static final String KEY_ADMIN_UNTIL = "admin_until";
+    private static final String KEY_SHOW_BATTERY = "show_battery";
+    private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
 
     private Prefs() {}
 
@@ -34,5 +36,23 @@ final class Prefs {
 
     static void clearAdminSession(Context c) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_ADMIN_UNTIL).apply();
+    }
+
+    static boolean isShowBattery(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getBoolean(KEY_SHOW_BATTERY, true);
+    }
+
+    static void setShowBattery(Context c, boolean enabled) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_SHOW_BATTERY, enabled).apply();
+    }
+
+    static boolean isLowBatteryAlertEnabled(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE).getBoolean(KEY_LOW_BATTERY_ALERT, true);
+    }
+
+    static void setLowBatteryAlertEnabled(Context c, boolean enabled) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_LOW_BATTERY_ALERT, enabled).apply();
     }
 }

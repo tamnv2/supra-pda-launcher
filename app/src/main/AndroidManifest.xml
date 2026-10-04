@@ -9,7 +9,7 @@
         android:allowBackup="false"
         android:icon="@drawable/supra_logo"
         android:roundIcon="@drawable/supra_logo"
-        android:label="SUPRA PDA"
+        android:label="Launcher PDA"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
@@ -35,7 +35,7 @@
         <service
             android:name=".GuardService"
             android:exported="true"
-            android:label="SUPRA PDA - Chống lách"
+            android:label="Launcher PDA - Chống lách"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -54,6 +54,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <receiver
+            android:name=".BatteryAlertReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_LOW" />
+                <action android:name="android.intent.action.BATTERY_OKAY" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".BootReceiver"

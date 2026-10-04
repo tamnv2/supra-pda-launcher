@@ -8,11 +8,15 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.os.BatteryManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -34,12 +38,14 @@ import java.util.Set;
 public class MainActivity extends Activity {
     private LinearLayout appArea;
     private TextView clock;
+    private TextView battery;
     private final Handler handler = new Handler();
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
             if (clock != null) {
                 clock.setText(new SimpleDateFormat("HH:mm\ndd/MM/yyyy", Locale.getDefault()).format(new Date()));
             }
+            updateBatteryUi();
             handler.postDelayed(this, 10000L);
         }
     };
@@ -95,18 +101,24 @@ public class MainActivity extends Activity {
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
-        title.setText("SUPRA PDA");
+        title.setText("Launcher PDA");
         title.setTextSize(22f);
         title.setTextColor(0xFF152238);
         title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        TextView sub = new TextView(this);
-        sub.setText("Màn hình làm việc");
-        sub.setTextSize(12.5f);
-        sub.setTextColor(0xFF6B7785);
         titleBox.addView(title);
-        titleBox.addView(sub);
         brand.addView(titleBox);
         header.addView(brand, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        battery = new TextView(this);
+        battery.setGravity(Gravity.CENTER);
+        battery.setTextSize(13f);
+        battery.setTextColor(0xFF334155);
+        battery.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        battery.setPadding(dp(10), dp(8), dp(10), dp(8));
+        battery.setBackground(roundRect(0xFFFFFFFF, 14f, true));
+        LinearLayout.LayoutParams batteryLp = new LinearLayout.LayoutParams(dp(68), dp(48));
+        batteryLp.setMargins(dp(8), 0, dp(4), 0);
+        header.addView(battery, batteryLp);
 
         clock = new TextView(this);
         clock.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
@@ -192,7 +204,7 @@ public class MainActivity extends Activity {
         LinearLayout row = null;
         int index = 0;
         for (ResolveInfo r : visible) {
-            if (index % 4 == 0) {
+            if (index % 3 == 0) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -204,8 +216,8 @@ public class MainActivity extends Activity {
             row.addView(createTile(r), tileLp);
             index++;
         }
-        if (row != null && index % 4 != 0) {
-            int missing = 4 - (index % 4);
+        if (row != null && index % 3 != 0) {
+            int missing = 3 - (index % 3);
             for (int i = 0; i < missing; i++) {
                 LinearLayout.LayoutParams filler = new LinearLayout.LayoutParams(0, dp(1), 1f);
                 filler.setMargins(dp(5), 0, dp(5), 0);
@@ -306,13 +318,41 @@ public class MainActivity extends Activity {
 
     private void applyImmersive() {
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+                    View.SYSTEM_UI_FLAG_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    private void updateBatteryUi() {
+        if (battery == null) return;
+        if (!Prefs.isShowBattery(this)) {
+            battery.setVisibility(View.GONE);
+            return;
+        }
+        battery.setVisibility(View.VISIBLE);
+        BatteryManager manager = (BatteryManager) getSystemService(BATTERY_SERVICE);
+        int level = manager == null ? -1 : manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+        battery.setText(level >= 0 ? ("Pin " + level + "%") : "Pin --%");
+        if (level >= 0 && level <= 15) {
+            battery.setTextColor(0xFFC62828);
+        } else if (level >= 0 && level <= 30) {
+            battery.setTextColor(0xFFC46A1A);
+        } else {
+            battery.setTextColor(0xFF16784A);
+        }
     }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
