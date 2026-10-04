@@ -262,20 +262,20 @@ public class AdminActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(compact ? 10 : 13), dp(9), dp(compact ? 9 : 11), dp(9));
+        row.setPadding(dp(isCompactWidth() ? 10 : 13), dp(9), dp(isCompactWidth() ? 9 : 11), dp(9));
         row.setBackground(cardBackground(0xFFFFFFFF, 14f));
 
         ImageView icon = new ImageView(this);
         Drawable d = info.loadIcon(getPackageManager());
         icon.setImageDrawable(d);
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(compact ? 40 : 44), dp(compact ? 40 : 44));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(isCompactWidth() ? 40 : 44), dp(isCompactWidth() ? 40 : 44));
         iconLp.setMargins(0, 0, dp(12), 0);
         row.addView(icon, iconLp);
 
         TextView name = new TextView(this);
         name.setText(info.loadLabel(getPackageManager()));
-        name.setTextSize(compact ? 13f : 14f);
+        name.setTextSize(isCompactWidth() ? 13f : 14f);
         name.setTextColor(0xFF263445);
         name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         name.setMaxLines(2);
