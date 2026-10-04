@@ -5,11 +5,13 @@ import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
@@ -22,6 +24,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
+import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -37,6 +40,7 @@ public class AdminActivity extends Activity {
     private Set<String> allowed;
     private TextView statusLauncher;
     private TextView statusGuard;
+    private LinearLayout uninstallList;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -48,6 +52,7 @@ public class AdminActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refreshStatus();
+        refreshUninstallableApps();
     }
 
     @Override public void onBackPressed() {
@@ -152,6 +157,19 @@ public class AdminActivity extends Activity {
             appList.addView(none);
         }
         root.addView(appList);
+
+        root.addView(section("Dọn dẹp ứng dụng"));
+        TextView cleanupHint = new TextView(this);
+        cleanupHint.setText("Chỉ hiển thị ứng dụng người dùng cài thêm. Launcher PDA và ứng dụng hệ thống được bảo vệ.");
+        cleanupHint.setTextSize(compact ? 11.5f : 12.5f);
+        cleanupHint.setTextColor(0xFF64748B);
+        cleanupHint.setPadding(dp(2), 0, dp(2), dp(8));
+        root.addView(cleanupHint);
+
+        uninstallList = new LinearLayout(this);
+        uninstallList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(uninstallList);
+        refreshUninstallableApps();
 
         root.addView(section("Bảo mật"));
         root.addView(actionRow(android.R.drawable.ic_lock_lock,
@@ -297,6 +315,119 @@ public class AdminActivity extends Activity {
         });
         row.addView(toggle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         return row;
+    }
+
+    private void refreshUninstallableApps() {
+        if (uninstallList == null) return;
+        uninstallList.removeAllViews();
+
+        List<ApplicationInfo> apps = new ArrayList<ApplicationInfo>();
+        try {
+            for (ApplicationInfo info : getPackageManager().getInstalledApplications(PackageManager.GET_META_DATA)) {
+                if (info == null) continue;
+                if (getPackageName().equals(info.packageName)) continue;
+                if ((info.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
+                apps.add(info);
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Không đọc được danh sách ứng dụng.", Toast.LENGTH_SHORT).show();
+        }
+
+        Collections.sort(apps, new Comparator<ApplicationInfo>() {
+            @Override public int compare(ApplicationInfo a, ApplicationInfo b) {
+                return String.valueOf(a.loadLabel(getPackageManager()))
+                        .compareToIgnoreCase(String.valueOf(b.loadLabel(getPackageManager())));
+            }
+        });
+
+        if (apps.isEmpty()) {
+            TextView none = new TextView(this);
+            none.setText("Không có ứng dụng cài thêm để gỡ.");
+            none.setTextSize(isCompactWidth() ? 12f : 13f);
+            none.setTextColor(0xFF718096);
+            none.setPadding(dp(14), dp(16), dp(14), dp(16));
+            none.setBackground(cardBackground(0xFFFFFFFF, 14f));
+            uninstallList.addView(none);
+            return;
+        }
+
+        for (final ApplicationInfo info : apps) {
+            View row = uninstallRow(info);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rowLp.setMargins(0, 0, 0, dp(8));
+            uninstallList.addView(row, rowLp);
+        }
+    }
+
+    private View uninstallRow(final ApplicationInfo info) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(isCompactWidth() ? 10 : 13), dp(9), dp(isCompactWidth() ? 9 : 11), dp(9));
+        row.setBackground(cardBackground(0xFFFFFFFF, 14f));
+
+        ImageView icon = new ImageView(this);
+        try { icon.setImageDrawable(info.loadIcon(getPackageManager())); }
+        catch (Exception ignored) { icon.setImageResource(android.R.drawable.sym_def_app_icon); }
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                dp(isCompactWidth() ? 38 : 42), dp(isCompactWidth() ? 38 : 42));
+        iconLp.setMargins(0, 0, dp(12), 0);
+        row.addView(icon, iconLp);
+
+        TextView name = new TextView(this);
+        name.setText(info.loadLabel(getPackageManager()));
+        name.setTextSize(isCompactWidth() ? 12.8f : 13.8f);
+        name.setTextColor(0xFF263445);
+        name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setIncludeFontPadding(false);
+        row.addView(name, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button uninstall = new Button(this);
+        uninstall.setText("Gỡ");
+        uninstall.setAllCaps(false);
+        uninstall.setTextSize(isCompactWidth() ? 11.5f : 12.5f);
+        uninstall.setMinWidth(0);
+        uninstall.setMinimumWidth(0);
+        uninstall.setPadding(dp(12), 0, dp(12), 0);
+        uninstall.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                confirmUninstall(info);
+            }
+        });
+        row.addView(uninstall, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(isCompactWidth() ? 40 : 42)));
+        return row;
+    }
+
+    private void confirmUninstall(final ApplicationInfo info) {
+        final CharSequence label = info.loadLabel(getPackageManager());
+        new AlertDialog.Builder(this)
+                .setTitle("Gỡ cài đặt ứng dụng")
+                .setMessage("Gỡ \"" + label + "\" khỏi PDA?")
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Gỡ", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        launchUninstall(info.packageName);
+                    }
+                })
+                .show();
+    }
+
+    private void launchUninstall(String packageName) {
+        Prefs.beginAdminSession(this);
+        try {
+            Intent uninstall = new Intent(Intent.ACTION_DELETE);
+            uninstall.setData(Uri.parse("package:" + packageName));
+            startActivity(uninstall);
+        } catch (Exception e) {
+            Toast.makeText(this, "Không mở được trình gỡ cài đặt.", Toast.LENGTH_LONG).show();
+        }
     }
 
     private View section(String title) {
