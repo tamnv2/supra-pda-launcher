@@ -45,9 +45,11 @@ public class GuardService extends AccessibilityService {
             }
         }
 
+        if (Prefs.isUninstallPackageAllowed(this, pkg)) return;
         if (Prefs.isAdminSession(this) && isAdminSystemPackage(pkg)) return;
         if (Prefs.isTimeFixSession(this) && "com.android.settings".equals(pkg)) return;
 
+        Prefs.clearUninstallSession(this);
         Prefs.clearUpdateSession(this);
         lastMeaningfulPackage = pkg;
         performGlobalAction(GLOBAL_ACTION_HOME);
