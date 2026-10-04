@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
     private TextView battery;
     private final Handler handler = new Handler();
     private boolean batteryReceiverRegistered;
+    private String lastAllowedKey;
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
@@ -211,6 +212,12 @@ public class MainActivity extends Activity {
         appArea.removeAllViews();
 
         Set<String> allowed = Prefs.getAllowed(this);
+        List<String> allowedSorted = new ArrayList<String>(allowed);
+        Collections.sort(allowedSorted);
+        String allowedKey = TextUtils.join("|", allowedSorted);
+        if (allowedKey.equals(lastAllowedKey) && appArea.getChildCount() > 0) return;
+        lastAllowedKey = allowedKey;
+
         List<ResolveInfo> apps = queryLauncherApps();
         List<ResolveInfo> visible = new ArrayList<ResolveInfo>();
         Set<String> seen = new HashSet<String>();
