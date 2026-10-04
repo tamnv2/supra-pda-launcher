@@ -3,11 +3,14 @@ plugins {
 }
 
 import java.util.Properties
+import java.util.Base64
 
 final def versionNameProp = project.findProperty('VERSION_NAME') ?: '0.2.0-test'
 final def versionCodeProp = (project.findProperty('VERSION_CODE') ?: '2').toInteger()
 final def keystorePropertiesFile = rootProject.file('keystore.properties')
 final def keystoreProperties = new Properties()
+final def generatedResDir = layout.buildDirectory.dir('generated/supraRes')
+
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
@@ -22,6 +25,12 @@ android {
         targetSdk 35
         versionCode versionCodeProp
         versionName versionNameProp
+    }
+
+    sourceSets {
+        main {
+            res.srcDir(generatedResDir)
+        }
     }
 
     signingConfigs {
@@ -53,6 +62,23 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+tasks.register('decodeSupraLogo') {
+    final def inputFile = file('src/main/logo.b64')
+    final def outputFileProvider = generatedResDir.map { it.file('drawable/supra_logo.png') }
+    inputs.file(inputFile)
+    outputs.file(outputFileProvider)
+
+    doLast {
+        final def outputFile = outputFileProvider.get().asFile
+        outputFile.parentFile.mkdirs()
+        outputFile.bytes = Base64.decoder.decode(inputFile.text.trim())
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn('decodeSupraLogo')
 }
 
 dependencies {
