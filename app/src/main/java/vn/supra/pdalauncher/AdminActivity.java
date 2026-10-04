@@ -13,6 +13,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.TextUtils;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
@@ -54,13 +56,17 @@ public class AdminActivity extends Activity {
     }
 
     private void buildUi() {
+        final boolean compact = isCompactWidth();
+
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         scroll.setBackgroundColor(0xFFF5F7FA);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(18), dp(18), dp(28));
+        int side = dp(compact ? 12 : 16);
+        root.setPadding(side, dp(12), side, dp(22));
         scroll.addView(root);
 
         LinearLayout header = new LinearLayout(this);
@@ -71,7 +77,7 @@ public class AdminActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
         logo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(dp(52), dp(52));
+        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(dp(compact ? 44 : 48), dp(compact ? 44 : 48));
         logoLp.setMargins(0, 0, dp(12), 0);
         header.addView(logo, logoLp);
 
@@ -79,12 +85,14 @@ public class AdminActivity extends Activity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("Cài đặt quản trị");
-        title.setTextSize(22f);
+        title.setTextSize(compact ? 19f : 21f);
         title.setTextColor(0xFF152238);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
         TextView subtitle = new TextView(this);
         subtitle.setText("v" + BuildConfig.VERSION_NAME);
-        subtitle.setTextSize(12.5f);
+        subtitle.setTextSize(compact ? 11f : 12f);
         subtitle.setTextColor(0xFF718096);
         titleBox.addView(title);
         titleBox.addView(subtitle);
@@ -101,7 +109,7 @@ public class AdminActivity extends Activity {
                 finish();
             }
         });
-        header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        header.addView(close, new LinearLayout.LayoutParams(dp(compact ? 42 : 46), dp(compact ? 42 : 46)));
         root.addView(header);
 
         LinearLayout statusCard = new LinearLayout(this);
@@ -254,23 +262,25 @@ public class AdminActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(10), dp(12), dp(10));
+        row.setPadding(dp(compact ? 10 : 13), dp(9), dp(compact ? 9 : 11), dp(9));
         row.setBackground(cardBackground(0xFFFFFFFF, 14f));
 
         ImageView icon = new ImageView(this);
         Drawable d = info.loadIcon(getPackageManager());
         icon.setImageDrawable(d);
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(compact ? 40 : 44), dp(compact ? 40 : 44));
         iconLp.setMargins(0, 0, dp(12), 0);
         row.addView(icon, iconLp);
 
         TextView name = new TextView(this);
         name.setText(info.loadLabel(getPackageManager()));
-        name.setTextSize(15f);
+        name.setTextSize(compact ? 13f : 14f);
         name.setTextColor(0xFF263445);
         name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setIncludeFontPadding(false);
         row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         final Switch toggle = new Switch(this);
@@ -296,7 +306,7 @@ public class AdminActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(17f);
+        t.setTextSize(isCompactWidth() ? 15.5f : 16.5f);
         t.setTextColor(0xFF203040);
         t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         box.addView(t);
@@ -307,7 +317,7 @@ public class AdminActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(13), dp(14), dp(13));
+        row.setPadding(dp(isCompactWidth() ? 10 : 13), dp(11), dp(isCompactWidth() ? 10 : 13), dp(11));
         row.setBackground(cardBackground(0xFFFFFFFF, 14f));
         row.setOnClickListener(listener);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -321,7 +331,7 @@ public class AdminActivity extends Activity {
         iconBg.setColor(0xFFEAF1FF);
         iconBg.setCornerRadius(dp(12));
         icon.setBackground(iconBg);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(isCompactWidth() ? 38 : 42), dp(isCompactWidth() ? 38 : 42));
         iconLp.setMargins(0, 0, dp(12), 0);
         row.addView(icon, iconLp);
 
@@ -329,7 +339,10 @@ public class AdminActivity extends Activity {
         textBox.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(14.5f);
+        t.setTextSize(isCompactWidth() ? 13f : 14f);
+        t.setMaxLines(2);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        t.setIncludeFontPadding(false);
         t.setTextColor(0xFF263445);
         t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         textBox.addView(t);
@@ -348,7 +361,7 @@ public class AdminActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(13), dp(12), dp(13));
+        row.setPadding(dp(isCompactWidth() ? 10 : 13), dp(11), dp(isCompactWidth() ? 9 : 11), dp(11));
         row.setBackground(cardBackground(0xFFFFFFFF, 14f));
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -357,7 +370,10 @@ public class AdminActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(14.5f);
+        t.setTextSize(isCompactWidth() ? 13f : 14f);
+        t.setMaxLines(2);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        t.setIncludeFontPadding(false);
         t.setTextColor(0xFF263445);
         t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -480,5 +496,13 @@ public class AdminActivity extends Activity {
         return g;
     }
 
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private boolean isCompactWidth() {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int widthDp = Math.round(dm.widthPixels / dm.density);
+        return widthDp < 390;
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
 }
