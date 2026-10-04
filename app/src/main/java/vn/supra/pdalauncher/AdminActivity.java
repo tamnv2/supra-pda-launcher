@@ -1,0 +1,413 @@
+package vn.supra.pdalauncher;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.text.InputType;
+import android.view.Gravity;
+import android.view.View;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Switch;
+import android.widget.CompoundButton;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+public class AdminActivity extends Activity {
+    private Set<String> allowed;
+    private TextView statusLauncher;
+    private TextView statusGuard;
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        if (!Prefs.isAdminSession(this)) { finish(); return; }
+        allowed = Prefs.getAllowed(this);
+        buildUi();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        refreshStatus();
+    }
+
+    @Override public void onBackPressed() {
+        Prefs.clearAdminSession(this);
+        super.onBackPressed();
+    }
+
+    private void buildUi() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(0xFFF5F7FA);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(18), dp(18), dp(28));
+        scroll.addView(root);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, 0, 0, dp(14));
+
+        ImageView logo = new ImageView(this);
+        logo.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
+        logo.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(dp(52), dp(52));
+        logoLp.setMargins(0, 0, dp(12), 0);
+        header.addView(logo, logoLp);
+
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Cài đặt quản trị");
+        title.setTextSize(22f);
+        title.setTextColor(0xFF152238);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView subtitle = new TextView(this);
+        subtitle.setText("SUPRA PDA Launcher  •  v" + BuildConfig.VERSION_NAME);
+        subtitle.setTextSize(12.5f);
+        subtitle.setTextColor(0xFF718096);
+        titleBox.addView(title);
+        titleBox.addView(subtitle);
+        header.addView(titleBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        ImageView close = new ImageView(this);
+        close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+        close.setPadding(dp(12), dp(12), dp(12), dp(12));
+        close.setBackground(cardBackground(0xFFFFFFFF, 14f));
+        close.setContentDescription("Đóng quản trị");
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Prefs.clearAdminSession(AdminActivity.this);
+                finish();
+            }
+        });
+        header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        root.addView(header);
+
+        LinearLayout statusCard = new LinearLayout(this);
+        statusCard.setOrientation(LinearLayout.HORIZONTAL);
+        statusCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+        statusCard.setGravity(Gravity.CENTER_VERTICAL);
+        statusCard.setBackground(cardBackground(0xFFFFFFFF, 16f));
+        statusLauncher = statusChip("Màn hình chính");
+        statusGuard = statusChip("Chống lách");
+        statusCard.addView(statusLauncher, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        statusCard.addView(statusGuard, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        statusLp.setMargins(0, 0, 0, dp(18));
+        root.addView(statusCard, statusLp);
+
+        root.addView(section("Ứng dụng hiển thị", "Bật hoặc tắt là tự động lưu ngay."));
+
+        LinearLayout appList = new LinearLayout(this);
+        appList.setOrientation(LinearLayout.VERTICAL);
+        List<ResolveInfo> apps = queryLauncherApps();
+        Set<String> seen = new HashSet<String>();
+        int count = 0;
+        for (final ResolveInfo r : apps) {
+            if (r.activityInfo == null) continue;
+            final String pkg = r.activityInfo.packageName;
+            if (pkg.equals(getPackageName()) || !seen.add(pkg)) continue;
+            View row = appRow(r, pkg);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rowLp.setMargins(0, 0, 0, dp(8));
+            appList.addView(row, rowLp);
+            count++;
+        }
+        if (count == 0) {
+            TextView none = new TextView(this);
+            none.setText("Không tìm thấy ứng dụng có thể mở trên PDA.");
+            none.setTextColor(0xFF718096);
+            none.setTextSize(13f);
+            none.setPadding(dp(14), dp(18), dp(14), dp(18));
+            none.setBackground(cardBackground(0xFFFFFFFF, 14f));
+            appList.addView(none);
+        }
+        root.addView(appList);
+
+        root.addView(section("Bảo mật", "Quản lý quyền truy cập phần cài đặt."));
+        root.addView(actionRow(android.R.drawable.ic_lock_lock,
+                "Đổi mật khẩu quản trị",
+                "Thay mật khẩu đang sử dụng trên PDA.",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) { showChangePassword(); }
+                }));
+
+        root.addView(section("Cập nhật", "Kiểm tra bản phát hành mới từ GitHub Releases."));
+        root.addView(actionRow(android.R.drawable.ic_popup_sync,
+                "Kiểm tra cập nhật",
+                "Tải bản APK mới và mở trình cài đặt Android.",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        UpdateManager.check(AdminActivity.this, true);
+                    }
+                }));
+
+        root.addView(section("Thiết lập PDA", "Các thiết lập hệ thống chỉ mở trong phiên quản trị."));
+        root.addView(actionRow(android.R.drawable.ic_menu_view,
+                "Chọn SUPRA PDA làm màn hình chính",
+                "Đặt Launcher này làm Home mặc định.",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Prefs.beginAdminSession(AdminActivity.this);
+                        try { startActivity(new Intent("android.settings.HOME_SETTINGS")); }
+                        catch (Exception e) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_secure,
+                "Bật / kiểm tra chống lách",
+                "Tự đưa người dùng về Home khi mở app ngoài danh sách.",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Prefs.beginAdminSession(AdminActivity.this);
+                        startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                    }
+                }));
+
+        root.addView(actionRow(android.R.drawable.ic_menu_preferences,
+                "Mở Cài đặt Android",
+                "Chỉ dùng khi quản trị viên cần cấu hình PDA.",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Prefs.beginAdminSession(AdminActivity.this);
+                        startActivity(new Intent(Settings.ACTION_SETTINGS));
+                    }
+                }));
+
+        TextView note = new TextView(this);
+        note.setText("Lưu ý: bản này dùng Custom Launcher + Accessibility. Trên PDA không có Device Owner, Android vẫn có một số đường hệ thống không thể khóa tuyệt đối ở cấp ứng dụng.");
+        note.setTextSize(11.5f);
+        note.setTextColor(0xFF7C8794);
+        note.setPadding(dp(4), dp(16), dp(4), 0);
+        root.addView(note);
+
+        setContentView(scroll);
+    }
+
+    private View appRow(final ResolveInfo info, final String pkg) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(10), dp(12), dp(10));
+        row.setBackground(cardBackground(0xFFFFFFFF, 14f));
+
+        ImageView icon = new ImageView(this);
+        Drawable d = info.loadIcon(getPackageManager());
+        icon.setImageDrawable(d);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        iconLp.setMargins(0, 0, dp(12), 0);
+        row.addView(icon, iconLp);
+
+        TextView name = new TextView(this);
+        name.setText(info.loadLabel(getPackageManager()));
+        name.setTextSize(15f);
+        name.setTextColor(0xFF263445);
+        name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        name.setMaxLines(2);
+        row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(allowed.contains(pkg));
+        toggle.setContentDescription("Cho phép hiển thị " + info.loadLabel(getPackageManager()));
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                if (isChecked) allowed.add(pkg); else allowed.remove(pkg);
+                Prefs.setAllowed(AdminActivity.this, allowed);
+                Toast.makeText(AdminActivity.this,
+                        isChecked ? "Đã cho phép hiển thị" : "Đã ẩn ứng dụng",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        row.addView(toggle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    private View section(String title, String subtitle) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(2), dp(20), dp(2), dp(10));
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(17f);
+        t.setTextColor(0xFF203040);
+        t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        box.addView(t);
+
+        TextView s = new TextView(this);
+        s.setText(subtitle);
+        s.setTextSize(12f);
+        s.setTextColor(0xFF7A8795);
+        s.setPadding(0, dp(2), 0, 0);
+        box.addView(s);
+        return box;
+    }
+
+    private View actionRow(int iconRes, String title, String subtitle, View.OnClickListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(13), dp(14), dp(13));
+        row.setBackground(cardBackground(0xFFFFFFFF, 14f));
+        row.setOnClickListener(listener);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowLp.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(rowLp);
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setPadding(dp(5), dp(5), dp(5), dp(5));
+        GradientDrawable iconBg = new GradientDrawable();
+        iconBg.setColor(0xFFEAF1FF);
+        iconBg.setCornerRadius(dp(12));
+        icon.setBackground(iconBg);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        iconLp.setMargins(0, 0, dp(12), 0);
+        row.addView(icon, iconLp);
+
+        LinearLayout textBox = new LinearLayout(this);
+        textBox.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTextColor(0xFF263445);
+        t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView s = new TextView(this);
+        s.setText(subtitle);
+        s.setTextSize(11.5f);
+        s.setTextColor(0xFF7A8795);
+        s.setPadding(0, dp(2), 0, 0);
+        textBox.addView(t);
+        textBox.addView(s);
+        row.addView(textBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView arrow = new TextView(this);
+        arrow.setText("›");
+        arrow.setTextSize(30f);
+        arrow.setTextColor(0xFFA1ACB8);
+        arrow.setGravity(Gravity.CENTER);
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
+        return row;
+    }
+
+    private TextView statusChip(String label) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(12.5f);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(8), dp(8), dp(8), dp(8));
+        return t;
+    }
+
+    private void refreshStatus() {
+        if (statusLauncher != null) {
+            boolean on = isDefaultHome();
+            statusLauncher.setText("Màn hình chính\n" + (on ? "ĐÃ CHỌN" : "CHƯA CHỌN"));
+            statusLauncher.setTextColor(on ? 0xFF16784A : 0xFFC46A1A);
+        }
+        if (statusGuard != null) {
+            boolean on = isGuardEnabled();
+            statusGuard.setText("Chống lách\n" + (on ? "ĐÃ BẬT" : "CHƯA BẬT"));
+            statusGuard.setTextColor(on ? 0xFF16784A : 0xFFC46A1A);
+        }
+    }
+
+    private void showChangePassword() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), 0, dp(18), 0);
+        final EditText p1 = passwordInput("Mật khẩu mới (tối thiểu 8 ký tự)");
+        final EditText p2 = passwordInput("Nhập lại mật khẩu mới");
+        box.addView(p1); box.addView(p2);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Đổi mật khẩu quản trị")
+                .setView(box)
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Lưu", null)
+                .create();
+        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override public void onShow(DialogInterface d) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        String a = p1.getText().toString();
+                        String b = p2.getText().toString();
+                        if (a.length() < 8) { p1.setError("Tối thiểu 8 ký tự"); return; }
+                        if (!a.equals(b)) { p2.setError("Hai mật khẩu không giống nhau"); return; }
+                        if (PasswordStore.setPassword(AdminActivity.this, a)) {
+                            Toast.makeText(AdminActivity.this, "Đã đổi mật khẩu.", Toast.LENGTH_SHORT).show();
+                            dialog.dismiss();
+                        } else p1.setError("Không thể lưu mật khẩu");
+                    }
+                });
+            }
+        });
+        dialog.show();
+    }
+
+    private EditText passwordInput(String hint) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setSingleLine(true);
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        return e;
+    }
+
+    private List<ResolveInfo> queryLauncherApps() {
+        Intent i = new Intent(Intent.ACTION_MAIN);
+        i.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> list = new ArrayList<ResolveInfo>(getPackageManager().queryIntentActivities(i, PackageManager.MATCH_ALL));
+        Collections.sort(list, new Comparator<ResolveInfo>() {
+            @Override public int compare(ResolveInfo a, ResolveInfo b) {
+                return String.valueOf(a.loadLabel(getPackageManager())).compareToIgnoreCase(String.valueOf(b.loadLabel(getPackageManager())));
+            }
+        });
+        return list;
+    }
+
+    private boolean isDefaultHome() {
+        Intent i = new Intent(Intent.ACTION_MAIN);
+        i.addCategory(Intent.CATEGORY_HOME);
+        ResolveInfo r = getPackageManager().resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY);
+        return r != null && r.activityInfo != null && getPackageName().equals(r.activityInfo.packageName);
+    }
+
+    private boolean isGuardEnabled() {
+        String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        if (enabled == null) return false;
+        ComponentName me = new ComponentName(this, GuardService.class);
+        return enabled.toLowerCase().contains(me.flattenToString().toLowerCase());
+    }
+
+    private GradientDrawable cardBackground(int color, float radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp((int) radiusDp));
+        g.setStroke(dp(1), 0xFFE1E7ED);
+        return g;
+    }
+
+    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+}
