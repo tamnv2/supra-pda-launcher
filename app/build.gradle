@@ -1,0 +1,60 @@
+plugins {
+    id 'com.android.application'
+}
+
+import java.util.Properties
+
+final def versionNameProp = project.findProperty('VERSION_NAME') ?: '0.2.0-test'
+final def versionCodeProp = (project.findProperty('VERSION_CODE') ?: '2').toInteger()
+final def keystorePropertiesFile = rootProject.file('keystore.properties')
+final def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace 'vn.supra.pdalauncher'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'vn.supra.pdalauncher'
+        minSdk 23
+        targetSdk 35
+        versionCode versionCodeProp
+        versionName versionNameProp
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.15.0'
+}
