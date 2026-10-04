@@ -2,10 +2,14 @@ package vn.supra.pdalauncher;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.BatteryManager;
@@ -13,6 +17,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.text.InputType;
+import android.text.TextUtils;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -36,17 +42,30 @@ import java.util.Locale;
 import java.util.Set;
 
 public class MainActivity extends Activity {
+    private static final int GRID_COLUMNS = 3;
+
     private LinearLayout appArea;
     private TextView clock;
     private TextView battery;
     private final Handler handler = new Handler();
+    private boolean batteryReceiverRegistered;
+
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
-            if (clock != null) {
-                clock.setText(new SimpleDateFormat("HH:mm\ndd/MM/yyyy", Locale.getDefault()).format(new Date()));
-            }
-            updateBatteryUi();
-            handler.postDelayed(this, 10000L);
+            updateClock();
+            long now = System.currentTimeMillis();
+            long delay = 60000L - (now % 60000L);
+            handler.postDelayed(this, delay);
+        }
+    };
+
+    private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || !Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) return;
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int percent = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : -1;
+            updateBatteryUi(percent);
         }
     };
 
@@ -61,13 +80,30 @@ public class MainActivity extends Activity {
         super.onResume();
         loadAllowedApps();
         applyImmersive();
+
         handler.removeCallbacks(clockTick);
         handler.post(clockTick);
+
+        if (!batteryReceiverRegistered) {
+            IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent sticky = registerReceiver(batteryReceiver, filter);
+            batteryReceiverRegistered = true;
+            if (sticky != null) {
+                int level = sticky.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = sticky.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                int percent = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : -1;
+                updateBatteryUi(percent);
+            }
+        }
     }
 
     @Override protected void onPause() {
         super.onPause();
         handler.removeCallbacks(clockTick);
+        if (batteryReceiverRegistered) {
+            try { unregisterReceiver(batteryReceiver); } catch (Exception ignored) { }
+            batteryReceiverRegistered = false;
+        }
     }
 
     @Override public void onBackPressed() { }
@@ -78,88 +114,107 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        final boolean compact = isCompactWidth();
+        final int side = dp(compact ? 12 : 16);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(14), dp(18), dp(14));
+        root.setPadding(side, dp(10), side, dp(8));
         root.setBackgroundColor(0xFFF5F7FA);
 
-        LinearLayout header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, 0, 0, dp(12));
-
-        LinearLayout brand = new LinearLayout(this);
-        brand.setOrientation(LinearLayout.HORIZONTAL);
-        brand.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView brandIcon = new ImageView(this);
         brandIcon.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
         brandIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        LinearLayout.LayoutParams brandIconLp = new LinearLayout.LayoutParams(dp(48), dp(48));
-        brandIconLp.setMargins(0, 0, dp(12), 0);
-        brand.addView(brandIcon, brandIconLp);
+        int brandSize = dp(compact ? 40 : 44);
+        LinearLayout.LayoutParams brandIconLp = new LinearLayout.LayoutParams(brandSize, brandSize);
+        brandIconLp.setMargins(0, 0, dp(9), 0);
+        topRow.addView(brandIcon, brandIconLp);
 
-        LinearLayout titleBox = new LinearLayout(this);
-        titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("Launcher PDA");
-        title.setTextSize(22f);
+        title.setTextSize(compact ? 19f : 21f);
         title.setTextColor(0xFF152238);
-        title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        titleBox.addView(title);
-        brand.addView(titleBox);
-        header.addView(brand, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        battery = new TextView(this);
-        battery.setGravity(Gravity.CENTER);
-        battery.setTextSize(13f);
-        battery.setTextColor(0xFF334155);
-        battery.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        battery.setPadding(dp(10), dp(8), dp(10), dp(8));
-        battery.setBackground(roundRect(0xFFFFFFFF, 14f, true));
-        LinearLayout.LayoutParams batteryLp = new LinearLayout.LayoutParams(dp(68), dp(48));
-        batteryLp.setMargins(dp(8), 0, dp(4), 0);
-        header.addView(battery, batteryLp);
-
-        clock = new TextView(this);
-        clock.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        clock.setTextSize(12.5f);
-        clock.setTextColor(0xFF51606F);
-        LinearLayout.LayoutParams clockLp = new LinearLayout.LayoutParams(dp(104), LinearLayout.LayoutParams.WRAP_CONTENT);
-        clockLp.setMargins(dp(8), 0, dp(8), 0);
-        header.addView(clock, clockLp);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        topRow.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         ImageView settings = new ImageView(this);
         settings.setImageResource(android.R.drawable.ic_menu_preferences);
-        settings.setPadding(dp(12), dp(12), dp(12), dp(12));
-        settings.setBackground(roundRect(0xFFFFFFFF, 14f, true));
+        int settingsSize = dp(compact ? 42 : 44);
+        settings.setPadding(dp(10), dp(10), dp(10), dp(10));
+        settings.setBackground(roundRect(0xFFFFFFFF, 12f, true));
         settings.setContentDescription("Cài đặt quản trị");
         settings.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showAdminLogin(); }
         });
-        header.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        root.addView(header);
+        topRow.addView(settings, new LinearLayout.LayoutParams(settingsSize, settingsSize));
+        root.addView(topRow);
+
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setOrientation(LinearLayout.HORIZONTAL);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(brandSize + dp(9), dp(4), 0, dp(9));
+
+        clock = new TextView(this);
+        clock.setTextSize(compact ? 11.5f : 12f);
+        clock.setTextColor(0xFF64748B);
+        clock.setSingleLine(true);
+        metaRow.addView(clock, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        battery = new TextView(this);
+        battery.setGravity(Gravity.CENTER);
+        battery.setTextSize(compact ? 11.5f : 12f);
+        battery.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        battery.setPadding(dp(9), dp(5), dp(9), dp(5));
+        battery.setBackground(roundRect(0xFFFFFFFF, 12f, true));
+        metaRow.addView(battery, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(metaRow);
 
         View divider = new View(this);
         divider.setBackgroundColor(0xFFE2E7EC);
-        root.addView(divider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
+        root.addView(divider, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
         appArea = new LinearLayout(this);
         appArea.setOrientation(LinearLayout.VERTICAL);
-        appArea.setPadding(0, dp(16), 0, dp(8));
+        appArea.setPadding(0, dp(10), 0, dp(4));
         scroll.addView(appArea);
-        root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        TextView footer = new TextView(this);
+        footer.setText("Phát triển hệ thống - tamnv2 | Pick Pack 1291");
+        footer.setTextSize(compact ? 9f : 9.5f);
+        footer.setTextColor(0xFF94A3B8);
+        footer.setGravity(Gravity.END);
+        footer.setSingleLine(true);
+        footer.setEllipsize(TextUtils.TruncateAt.END);
+        footer.setPadding(0, dp(4), 0, 0);
+        root.addView(footer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
     }
 
     private void loadAllowedApps() {
+        if (appArea == null) return;
         appArea.removeAllViews();
+
         Set<String> allowed = Prefs.getAllowed(this);
         List<ResolveInfo> apps = queryLauncherApps();
         List<ResolveInfo> visible = new ArrayList<ResolveInfo>();
         Set<String> seen = new HashSet<String>();
+
         for (ResolveInfo r : apps) {
             if (r.activityInfo == null) continue;
             String pkg = r.activityInfo.packageName;
@@ -168,87 +223,82 @@ public class MainActivity extends Activity {
         }
 
         if (visible.isEmpty()) {
-            LinearLayout emptyCard = new LinearLayout(this);
-            emptyCard.setOrientation(LinearLayout.VERTICAL);
-            emptyCard.setGravity(Gravity.CENTER);
-            emptyCard.setPadding(dp(22), dp(56), dp(22), dp(56));
-            emptyCard.setBackground(roundRect(0xFFFFFFFF, 18f, true));
-
-            TextView icon = new TextView(this);
-            icon.setText("＋");
-            icon.setTextSize(36f);
-            icon.setTextColor(0xFF1E5CC8);
-            icon.setGravity(Gravity.CENTER);
-            emptyCard.addView(icon);
-
             TextView empty = new TextView(this);
             empty.setText("Chưa có ứng dụng nào được hiển thị");
             empty.setGravity(Gravity.CENTER);
-            empty.setTextSize(16f);
-            empty.setTextColor(0xFF475569);
-            empty.setPadding(0, dp(10), 0, 0);
-            emptyCard.addView(empty);
-
-            TextView hint = new TextView(this);
-            hint.setText("Mở biểu tượng cài đặt ở góc phải để chọn ứng dụng.");
-            hint.setGravity(Gravity.CENTER);
-            hint.setTextSize(12.5f);
-            hint.setTextColor(0xFF8793A0);
-            hint.setPadding(0, dp(5), 0, 0);
-            emptyCard.addView(hint);
-
-            appArea.addView(emptyCard, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            empty.setTextSize(isCompactWidth() ? 14f : 15f);
+            empty.setTextColor(0xFF64748B);
+            empty.setPadding(dp(16), dp(42), dp(16), dp(42));
+            empty.setBackground(roundRect(0xFFFFFFFF, 16f, true));
+            appArea.addView(empty, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
             return;
         }
 
+        final int tileHeight = calculateTileHeightDp();
         LinearLayout row = null;
-        int index = 0;
-        for (ResolveInfo r : visible) {
-            if (index % 3 == 0) {
+
+        for (int index = 0; index < visible.size(); index++) {
+            if (index % GRID_COLUMNS == 0) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
-                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                rowLp.setMargins(0, 0, 0, dp(10));
+                row.setBaselineAligned(false);
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rowLp.setMargins(0, 0, 0, dp(8));
                 appArea.addView(row, rowLp);
             }
-            LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(0, dp(132), 1f);
-            tileLp.setMargins(dp(5), 0, dp(5), 0);
-            row.addView(createTile(r), tileLp);
-            index++;
+
+            LinearLayout.LayoutParams tileLp =
+                    new LinearLayout.LayoutParams(0, dp(tileHeight), 1f);
+            tileLp.setMargins(dp(3), 0, dp(3), 0);
+            row.addView(createTile(visible.get(index)), tileLp);
         }
-        if (row != null && index % 3 != 0) {
-            int missing = 3 - (index % 3);
-            for (int i = 0; i < missing; i++) {
+
+        int remainder = visible.size() % GRID_COLUMNS;
+        if (row != null && remainder != 0) {
+            for (int i = remainder; i < GRID_COLUMNS; i++) {
                 LinearLayout.LayoutParams filler = new LinearLayout.LayoutParams(0, dp(1), 1f);
-                filler.setMargins(dp(5), 0, dp(5), 0);
+                filler.setMargins(dp(3), 0, dp(3), 0);
                 row.addView(new View(this), filler);
             }
         }
     }
 
     private View createTile(final ResolveInfo info) {
+        final boolean compact = isCompactWidth();
+        final int iconDp = calculateIconSizeDp();
+
         LinearLayout tile = new LinearLayout(this);
         tile.setOrientation(LinearLayout.VERTICAL);
         tile.setGravity(Gravity.CENTER);
-        tile.setPadding(dp(8), dp(12), dp(8), dp(10));
-        tile.setBackground(roundRect(0xFFFFFFFF, 18f, true));
+        tile.setPadding(dp(5), dp(8), dp(5), dp(7));
+        tile.setBackground(roundRect(0xFFFFFFFF, 15f, true));
+        tile.setClickable(true);
+        tile.setFocusable(true);
 
         ImageView icon = new ImageView(this);
-        Drawable d = info.loadIcon(getPackageManager());
-        icon.setImageDrawable(d);
+        Drawable drawable = info.loadIcon(getPackageManager());
+        icon.setImageDrawable(drawable);
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        tile.addView(icon, new LinearLayout.LayoutParams(dp(58), dp(58)));
+        tile.addView(icon, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
 
         TextView label = new TextView(this);
         label.setText(info.loadLabel(getPackageManager()));
-        label.setTextSize(12.5f);
+        label.setTextSize(compact ? 11.2f : 12f);
         label.setTextColor(0xFF263445);
         label.setGravity(Gravity.CENTER);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         label.setMaxLines(2);
-        label.setPadding(0, dp(8), 0, 0);
-        tile.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        label.setEllipsize(TextUtils.TruncateAt.END);
+        label.setIncludeFontPadding(false);
+        label.setLineSpacing(0f, 0.94f);
+        label.setPadding(dp(2), dp(7), dp(2), 0);
+        tile.addView(label, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         final String pkg = info.activityInfo.packageName;
+        tile.setContentDescription(String.valueOf(info.loadLabel(getPackageManager())));
         tile.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 try {
@@ -257,7 +307,8 @@ public class MainActivity extends Activity {
                     launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(launch);
                 } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, "Không thể mở ứng dụng.", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this,
+                            "Không thể mở ứng dụng.", Toast.LENGTH_SHORT).show();
                 }
             }
         });
@@ -267,10 +318,12 @@ public class MainActivity extends Activity {
     private List<ResolveInfo> queryLauncherApps() {
         Intent i = new Intent(Intent.ACTION_MAIN);
         i.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> result = new ArrayList<ResolveInfo>(getPackageManager().queryIntentActivities(i, PackageManager.MATCH_ALL));
+        List<ResolveInfo> result = new ArrayList<ResolveInfo>(
+                getPackageManager().queryIntentActivities(i, PackageManager.MATCH_ALL));
         Collections.sort(result, new Comparator<ResolveInfo>() {
             @Override public int compare(ResolveInfo a, ResolveInfo b) {
-                return String.valueOf(a.loadLabel(getPackageManager())).compareToIgnoreCase(String.valueOf(b.loadLabel(getPackageManager())));
+                return String.valueOf(a.loadLabel(getPackageManager()))
+                        .compareToIgnoreCase(String.valueOf(b.loadLabel(getPackageManager())));
             }
         });
         return result;
@@ -289,12 +342,14 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Hủy", null)
                 .setPositiveButton("Mở", null)
                 .create();
+
         dialog.setOnShowListener(new DialogInterface.OnShowListener() {
             @Override public void onShow(DialogInterface d) {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         String value = input.getText().toString();
-                        if (PasswordStore.verify(MainActivity.this, value) || PasswordStore.verifyRecovery(value)) {
+                        if (PasswordStore.verify(MainActivity.this, value)
+                                || PasswordStore.verifyRecovery(value)) {
                             Prefs.beginAdminSession(MainActivity.this);
                             dialog.dismiss();
                             startActivity(new Intent(MainActivity.this, AdminActivity.class));
@@ -308,16 +363,36 @@ public class MainActivity extends Activity {
         dialog.show();
     }
 
-    private GradientDrawable roundRect(int color, float radiusDp, boolean border) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(color);
-        g.setCornerRadius(dp((int) radiusDp));
-        if (border) g.setStroke(dp(1), 0xFFE2E7EC);
-        return g;
+    private void updateClock() {
+        if (clock != null) {
+            clock.setText(new SimpleDateFormat(
+                    "HH:mm  •  dd/MM/yyyy", Locale.getDefault()).format(new Date()));
+        }
+    }
+
+    private void updateBatteryUi(int level) {
+        if (battery == null) return;
+        if (!Prefs.isShowBattery(this)) {
+            battery.setVisibility(View.GONE);
+            return;
+        }
+
+        battery.setVisibility(View.VISIBLE);
+        battery.setText(level >= 0 ? ("Pin " + level + "%") : "Pin --%");
+        if (level >= 0 && level <= 15) {
+            battery.setTextColor(0xFFC62828);
+        } else if (level >= 0 && level <= 30) {
+            battery.setTextColor(0xFFC46A1A);
+        } else {
+            battery.setTextColor(0xFF16784A);
+        }
     }
 
     private void applyImmersive() {
-        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        getWindow().setFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {
@@ -336,24 +411,44 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void updateBatteryUi() {
-        if (battery == null) return;
-        if (!Prefs.isShowBattery(this)) {
-            battery.setVisibility(View.GONE);
-            return;
-        }
-        battery.setVisibility(View.VISIBLE);
-        BatteryManager manager = (BatteryManager) getSystemService(BATTERY_SERVICE);
-        int level = manager == null ? -1 : manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-        battery.setText(level >= 0 ? ("Pin " + level + "%") : "Pin --%");
-        if (level >= 0 && level <= 15) {
-            battery.setTextColor(0xFFC62828);
-        } else if (level >= 0 && level <= 30) {
-            battery.setTextColor(0xFFC46A1A);
-        } else {
-            battery.setTextColor(0xFF16784A);
-        }
+    private boolean isCompactWidth() {
+        return screenWidthDp() < 390;
     }
 
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private int calculateTileHeightDp() {
+        int width = screenWidthDp();
+        int side = isCompactWidth() ? 12 : 16;
+        int available = width - (side * 2) - 18;
+        int cell = Math.max(88, available / GRID_COLUMNS);
+        return clamp(cell + 12, 108, 124);
+    }
+
+    private int calculateIconSizeDp() {
+        int width = screenWidthDp();
+        int side = isCompactWidth() ? 12 : 16;
+        int available = width - (side * 2) - 18;
+        int cell = Math.max(88, available / GRID_COLUMNS);
+        return clamp(Math.round(cell * 0.42f), 40, 50);
+    }
+
+    private int screenWidthDp() {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        return Math.round(dm.widthPixels / dm.density);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private GradientDrawable roundRect(int color, float radiusDp, boolean border) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(Math.round(radiusDp)));
+        if (border) g.setStroke(dp(1), 0xFFE2E7EC);
+        return g;
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
 }
