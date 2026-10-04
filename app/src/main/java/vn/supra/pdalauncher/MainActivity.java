@@ -47,6 +47,7 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final int GRID_COLUMNS = 3;
+    private static final int REQUEST_PHONE_STATE = 701;
 
     private LinearLayout appArea;
     private TextView clock;
