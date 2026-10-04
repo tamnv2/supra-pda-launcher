@@ -221,17 +221,40 @@ public class MainActivity extends Activity {
         timeWarningCard.addView(timeWarningText, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        LinearLayout timeActions = new LinearLayout(this);
+        timeActions.setOrientation(LinearLayout.HORIZONTAL);
+        timeActions.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button wifiSettings = new Button(this);
+        wifiSettings.setText("Wi-Fi");
+        wifiSettings.setTextSize(compact ? 11f : 12f);
+        wifiSettings.setAllCaps(false);
+        wifiSettings.setSingleLine(true);
+        wifiSettings.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openWifiSettings(); }
+        });
+        LinearLayout.LayoutParams wifiButtonLp = new LinearLayout.LayoutParams(
+                0, dp(compact ? 42 : 44), 1f);
+        wifiButtonLp.setMargins(0, 0, dp(4), 0);
+        timeActions.addView(wifiSettings, wifiButtonLp);
+
         Button timeSettings = new Button(this);
-        timeSettings.setText("Cài đặt ngày giờ");
+        timeSettings.setText("Ngày giờ");
         timeSettings.setTextSize(compact ? 11f : 12f);
         timeSettings.setAllCaps(false);
+        timeSettings.setSingleLine(true);
         timeSettings.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openDateTimeSettings(); }
         });
         LinearLayout.LayoutParams timeButtonLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(compact ? 42 : 44));
-        timeButtonLp.setMargins(0, dp(7), 0, 0);
-        timeWarningCard.addView(timeSettings, timeButtonLp);
+                0, dp(compact ? 42 : 44), 1f);
+        timeButtonLp.setMargins(dp(4), 0, 0, 0);
+        timeActions.addView(timeSettings, timeButtonLp);
+
+        LinearLayout.LayoutParams timeActionsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        timeActionsLp.setMargins(0, dp(7), 0, 0);
+        timeWarningCard.addView(timeActions, timeActionsLp);
 
         LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -481,6 +504,21 @@ public class MainActivity extends Activity {
             return year < 2025 || year > 2100;
         } catch (Exception e) {
             return true;
+        }
+    }
+
+    private void openWifiSettings() {
+        Prefs.beginTimeFixSession(this);
+        try {
+            Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+            } else {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            }
+        } catch (Exception e) {
+            Prefs.clearTimeFixSession(this);
+            Toast.makeText(this, "Không mở được cài đặt Wi-Fi.", Toast.LENGTH_SHORT).show();
         }
     }
 
