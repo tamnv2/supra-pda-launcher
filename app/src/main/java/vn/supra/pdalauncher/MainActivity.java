@@ -16,6 +16,7 @@ import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
@@ -25,6 +26,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -33,6 +35,7 @@ import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
@@ -47,8 +50,12 @@ public class MainActivity extends Activity {
     private LinearLayout appArea;
     private TextView clock;
     private TextView battery;
+    private LinearLayout timeWarningCard;
+    private TextView timeWarningText;
+    private boolean systemTimeInvalid;
     private final Handler handler = new Handler();
     private boolean batteryReceiverRegistered;
+    private boolean timeReceiverRegistered;
     private String lastAllowedKey;
 
     private final Runnable clockTick = new Runnable() {
@@ -57,6 +64,13 @@ public class MainActivity extends Activity {
             long now = System.currentTimeMillis();
             long delay = 60000L - (now % 60000L);
             handler.postDelayed(this, delay);
+        }
+    };
+
+    private final BroadcastReceiver timeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            updateClock();
+            refreshTimeState();
         }
     };
 
@@ -79,11 +93,22 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        Prefs.clearTimeFixSession(this);
         loadAllowedApps();
+        refreshTimeState();
         applyImmersive();
 
         handler.removeCallbacks(clockTick);
         handler.post(clockTick);
+
+        if (!timeReceiverRegistered) {
+            IntentFilter timeFilter = new IntentFilter();
+            timeFilter.addAction(Intent.ACTION_TIME_CHANGED);
+            timeFilter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+            timeFilter.addAction(Intent.ACTION_DATE_CHANGED);
+            registerReceiver(timeReceiver, timeFilter);
+            timeReceiverRegistered = true;
+        }
 
         if (!batteryReceiverRegistered) {
             IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
@@ -101,6 +126,10 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         handler.removeCallbacks(clockTick);
+        if (timeReceiverRegistered) {
+            try { unregisterReceiver(timeReceiver); } catch (Exception ignored) { }
+            timeReceiverRegistered = false;
+        }
         if (batteryReceiverRegistered) {
             try { unregisterReceiver(batteryReceiver); } catch (Exception ignored) { }
             batteryReceiverRegistered = false;
@@ -177,6 +206,38 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         root.addView(metaRow);
 
+        timeWarningCard = new LinearLayout(this);
+        timeWarningCard.setOrientation(LinearLayout.VERTICAL);
+        timeWarningCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        timeWarningCard.setBackground(roundRect(0xFFFFF7E6, 13f, true));
+        timeWarningCard.setVisibility(View.GONE);
+
+        timeWarningText = new TextView(this);
+        timeWarningText.setTextSize(compact ? 11.5f : 12.5f);
+        timeWarningText.setTextColor(0xFF8A4B08);
+        timeWarningText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        timeWarningText.setMaxLines(3);
+        timeWarningText.setEllipsize(TextUtils.TruncateAt.END);
+        timeWarningCard.addView(timeWarningText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        Button timeSettings = new Button(this);
+        timeSettings.setText("Cài đặt ngày giờ");
+        timeSettings.setTextSize(compact ? 11f : 12f);
+        timeSettings.setAllCaps(false);
+        timeSettings.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openDateTimeSettings(); }
+        });
+        LinearLayout.LayoutParams timeButtonLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(compact ? 42 : 44));
+        timeButtonLp.setMargins(0, dp(7), 0, 0);
+        timeWarningCard.addView(timeSettings, timeButtonLp);
+
+        LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        warningLp.setMargins(0, 0, 0, dp(8));
+        root.addView(timeWarningCard, warningLp);
+
         View divider = new View(this);
         divider.setBackgroundColor(0xFFE2E7EC);
         root.addView(divider, new LinearLayout.LayoutParams(
@@ -209,13 +270,13 @@ public class MainActivity extends Activity {
 
     private void loadAllowedApps() {
         if (appArea == null) return;
-        appArea.removeAllViews();
 
         Set<String> allowed = Prefs.getAllowed(this);
         List<String> allowedSorted = new ArrayList<String>(allowed);
         Collections.sort(allowedSorted);
         String allowedKey = TextUtils.join("|", allowedSorted);
         if (allowedKey.equals(lastAllowedKey) && appArea.getChildCount() > 0) return;
+        appArea.removeAllViews();
         lastAllowedKey = allowedKey;
 
         List<ResolveInfo> apps = queryLauncherApps();
@@ -308,6 +369,13 @@ public class MainActivity extends Activity {
         tile.setContentDescription(String.valueOf(info.loadLabel(getPackageManager())));
         tile.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
+                if (isSystemTimeInvalid()) {
+                    refreshTimeState();
+                    Toast.makeText(MainActivity.this,
+                            "Ngày giờ PDA chưa đúng. Hãy đồng bộ ngày giờ trước.",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
                 try {
                     Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
                     if (launch == null) throw new IllegalStateException("No launch intent");
@@ -368,6 +436,67 @@ public class MainActivity extends Activity {
             }
         });
         dialog.show();
+    }
+
+    private void refreshTimeState() {
+        boolean autoTime = readGlobalFlag(Settings.Global.AUTO_TIME);
+        boolean autoTimeZone = readGlobalFlag(Settings.Global.AUTO_TIME_ZONE);
+        systemTimeInvalid = isSystemTimeInvalid();
+
+        boolean showWarning = !autoTime || !autoTimeZone || systemTimeInvalid;
+        if (timeWarningCard != null) {
+            timeWarningCard.setVisibility(showWarning ? View.VISIBLE : View.GONE);
+        }
+        if (appArea != null) {
+            appArea.setAlpha(systemTimeInvalid ? 0.55f : 1f);
+        }
+        if (!showWarning || timeWarningText == null) return;
+
+        if (systemTimeInvalid && autoTime && autoTimeZone) {
+            timeWarningText.setText(
+                    "Ngày giờ PDA chưa đồng bộ. Kiểm tra Wi-Fi/mạng và chờ Android cập nhật giờ tự động.");
+        } else if (!autoTime && !autoTimeZone) {
+            timeWarningText.setText(
+                    "Hãy bật Ngày giờ tự động và Múi giờ tự động.");
+        } else if (!autoTime) {
+            timeWarningText.setText("Hãy bật Ngày giờ tự động.");
+        } else if (!autoTimeZone) {
+            timeWarningText.setText("Hãy bật Múi giờ tự động.");
+        } else {
+            timeWarningText.setText("Ngày giờ PDA chưa đúng. Hãy đồng bộ lại trước khi làm việc.");
+        }
+    }
+
+    private boolean readGlobalFlag(String key) {
+        try {
+            return Settings.Global.getInt(getContentResolver(), key, 0) == 1;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isSystemTimeInvalid() {
+        try {
+            int year = Calendar.getInstance().get(Calendar.YEAR);
+            return year < 2025 || year > 2100;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    private void openDateTimeSettings() {
+        Prefs.beginTimeFixSession(this);
+        try {
+            Intent intent = new Intent(Settings.ACTION_DATE_SETTINGS);
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+            } else {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            }
+        } catch (Exception e) {
+            Prefs.clearTimeFixSession(this);
+            Toast.makeText(this, "Không mở được cài đặt ngày giờ.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void updateClock() {
