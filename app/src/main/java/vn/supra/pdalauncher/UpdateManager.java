@@ -93,6 +93,7 @@ final class UpdateManager {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !activity.getPackageManager().canRequestPackageInstalls()) {
             try {
+                Prefs.beginUpdateSession(activity);
                 Intent permission = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:" + activity.getPackageName()));
                 activity.startActivity(permission);
@@ -144,6 +145,7 @@ final class UpdateManager {
 
     private static void launchInstaller(Activity activity, File apk) {
         try {
+            Prefs.beginUpdateSession(activity);
             Uri uri = FileProvider.getUriForFile(activity,
                     BuildConfig.APPLICATION_ID + ".fileprovider", apk);
             Intent install = new Intent(Intent.ACTION_VIEW);

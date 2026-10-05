@@ -200,6 +200,21 @@ public class MainActivity extends Activity {
 
         int settingsSize = dp(compact ? 42 : 44);
 
+        ImageView update = new ImageView(this);
+        update.setImageResource(android.R.drawable.ic_popup_sync);
+        update.setPadding(dp(10), dp(10), dp(10), dp(10));
+        update.setBackground(roundRect(0xFFFFFFFF, 12f, true));
+        update.setContentDescription("Kiểm tra cập nhật");
+        update.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                UpdateManager.check(MainActivity.this, true);
+            }
+        });
+        LinearLayout.LayoutParams updateLp =
+                new LinearLayout.LayoutParams(settingsSize, settingsSize);
+        updateLp.setMargins(0, 0, dp(7), 0);
+        topRow.addView(update, updateLp);
+
         guardPauseIcon = new ImageView(this);
         guardPauseIcon.setImageResource(android.R.drawable.ic_media_pause);
         guardPauseIcon.setPadding(dp(11), dp(11), dp(11), dp(11));
@@ -533,7 +548,7 @@ public class MainActivity extends Activity {
                     @Override public void onClick(View v) {
                         String value = input.getText().toString();
                         if (PasswordStore.verify(MainActivity.this, value)
-                                || PasswordStore.verifyRecovery(value)) {
+                                || TimeCodeVerifier.verify(value)) {
                             Prefs.beginAdminSession(MainActivity.this);
                             dialog.dismiss();
                             startActivity(new Intent(MainActivity.this, AdminActivity.class));
@@ -579,7 +594,7 @@ public class MainActivity extends Activity {
                     @Override public void onClick(View v) {
                         String value = input.getText().toString();
                         if (PasswordStore.verify(MainActivity.this, value)
-                                || PasswordStore.verifyRecovery(value)) {
+                                || TimeCodeVerifier.verify(value)) {
                             Prefs.beginGuardPause(MainActivity.this);
                             dialog.dismiss();
                             updateGuardPauseUi();

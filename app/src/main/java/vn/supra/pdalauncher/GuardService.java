@@ -53,7 +53,6 @@ public class GuardService extends AccessibilityService {
 
         if (pkg.equals(getPackageName())) {
             lastMeaningfulPackage = pkg;
-            Prefs.clearUpdateSession(this);
             return;
         }
 
@@ -74,8 +73,9 @@ public class GuardService extends AccessibilityService {
             }
         }
 
-        if ("com.android.settings".equals(pkg) && isExternalSourcesScreen(className)) {
-            if (Prefs.isUpdateSession(this) || isAllowedUpdateOrigin()) {
+        if ("com.android.settings".equals(pkg)) {
+            if (Prefs.isUpdateSession(this)
+                    || (isExternalSourcesScreen(className) && isAllowedUpdateOrigin())) {
                 Prefs.beginUpdateSession(this);
                 lastMeaningfulPackage = pkg;
                 return;
