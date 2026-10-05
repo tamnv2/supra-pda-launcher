@@ -52,6 +52,7 @@ public class MainActivity extends Activity {
     private TextView battery;
     private LinearLayout timeWarningCard;
     private TextView timeWarningText;
+    private ImageView guardPauseIcon;
     private LinearLayout deviceIdentityCard;
     private ImageView deviceBarcode;
     private TextView deviceIdText;
@@ -66,6 +67,7 @@ public class MainActivity extends Activity {
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
             updateClock();
+            updateGuardPauseUi();
             long now = System.currentTimeMillis();
             long delay = 60000L - (now % 60000L);
             handler.postDelayed(this, delay);
@@ -103,6 +105,7 @@ public class MainActivity extends Activity {
         loadAllowedApps();
         refreshTimeState();
         updateDeviceIdentityUi();
+        updateGuardPauseUi();
         applyImmersive();
 
         handler.removeCallbacks(clockTick);
@@ -195,9 +198,23 @@ public class MainActivity extends Activity {
         topRow.addView(titleBlock, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
+        int settingsSize = dp(compact ? 42 : 44);
+
+        guardPauseIcon = new ImageView(this);
+        guardPauseIcon.setImageResource(android.R.drawable.ic_media_pause);
+        guardPauseIcon.setPadding(dp(11), dp(11), dp(11), dp(11));
+        guardPauseIcon.setBackground(roundRect(0xFFFFFFFF, 12f, true));
+        guardPauseIcon.setContentDescription("Tạm hoãn chống lách 5 phút");
+        guardPauseIcon.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { handleGuardPauseClick(); }
+        });
+        LinearLayout.LayoutParams pauseLp =
+                new LinearLayout.LayoutParams(settingsSize, settingsSize);
+        pauseLp.setMargins(0, 0, dp(7), 0);
+        topRow.addView(guardPauseIcon, pauseLp);
+
         ImageView settings = new ImageView(this);
         settings.setImageResource(android.R.drawable.ic_menu_preferences);
-        int settingsSize = dp(compact ? 42 : 44);
         settings.setPadding(dp(10), dp(10), dp(10), dp(10));
         settings.setBackground(roundRect(0xFFFFFFFF, 12f, true));
         settings.setContentDescription("Cài đặt quản trị");
@@ -528,6 +545,79 @@ public class MainActivity extends Activity {
             }
         });
         dialog.show();
+    }
+
+    private void handleGuardPauseClick() {
+        if (Prefs.isGuardPaused(this)) {
+            Prefs.clearGuardPause(this);
+            updateGuardPauseUi();
+            Toast.makeText(this,
+                    "Đã bật lại chống lách.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        showGuardPauseLogin();
+    }
+
+    private void showGuardPauseLogin() {
+        final EditText input = new EditText(this);
+        input.setHint("Nhập mật khẩu quản trị");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setPadding(dp(16), dp(6), dp(16), dp(6));
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Tạm hoãn chống lách 5 phút")
+                .setMessage("Trong 5 phút, Launcher sẽ không tự kéo về màn hình chính khi mở Cài đặt hoặc trình cài ứng dụng.")
+                .setView(input)
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Tạm hoãn", null)
+                .create();
+
+        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override public void onShow(DialogInterface d) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        String value = input.getText().toString();
+                        if (PasswordStore.verify(MainActivity.this, value)
+                                || PasswordStore.verifyRecovery(value)) {
+                            Prefs.beginGuardPause(MainActivity.this);
+                            dialog.dismiss();
+                            updateGuardPauseUi();
+                            Toast.makeText(MainActivity.this,
+                                    "Đã tạm hoãn chống lách trong 5 phút.",
+                                    Toast.LENGTH_LONG).show();
+                        } else {
+                            input.setError("Mật khẩu không đúng");
+                        }
+                    }
+                });
+            }
+        });
+        dialog.show();
+    }
+
+    private void updateGuardPauseUi() {
+        if (guardPauseIcon == null) return;
+
+        long remaining = Prefs.guardPauseRemainingMs(this);
+        boolean paused = remaining > 0L;
+
+        guardPauseIcon.setBackground(roundRect(
+                paused ? 0xFFFFF3CD : 0xFFFFFFFF, 12f, true));
+        guardPauseIcon.setAlpha(paused ? 1f : 0.82f);
+
+        if (paused) {
+            long seconds = (remaining + 999L) / 1000L;
+            long minutes = seconds / 60L;
+            long rest = seconds % 60L;
+            guardPauseIcon.setContentDescription(
+                    String.format(Locale.getDefault(),
+                            "Đang tạm hoãn chống lách, còn %d:%02d. Chạm để bật lại.",
+                            minutes, rest));
+        } else {
+            guardPauseIcon.setContentDescription(
+                    "Tạm hoãn chống lách 5 phút");
+        }
     }
 
     private void refreshTimeState() {
