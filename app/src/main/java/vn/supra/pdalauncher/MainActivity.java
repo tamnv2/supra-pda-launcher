@@ -532,7 +532,7 @@ public class MainActivity extends Activity {
         final EditText input = new EditText(this);
         input.setHint("Nhập mật khẩu quản trị");
         input.setSingleLine(true);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setPadding(dp(16), dp(6), dp(16), dp(6));
 
         final AlertDialog dialog = new AlertDialog.Builder(this)
@@ -577,7 +577,7 @@ public class MainActivity extends Activity {
         final EditText input = new EditText(this);
         input.setHint("Nhập mật khẩu quản trị");
         input.setSingleLine(true);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setPadding(dp(16), dp(6), dp(16), dp(6));
 
         final AlertDialog dialog = new AlertDialog.Builder(this)
