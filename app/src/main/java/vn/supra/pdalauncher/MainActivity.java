@@ -1,11 +1,8 @@
 package vn.supra.pdalauncher;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -49,7 +46,6 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final int GRID_COLUMNS = 3;
-    private static final int REQUEST_PHONE_STATE = 701;
 
     private LinearLayout appArea;
     private TextView clock;
@@ -98,7 +94,6 @@ public class MainActivity extends Activity {
         PasswordStore.ensureInitialized(this);
         buildUi();
         updateDeviceIdentityUi();
-        maybeRequestPhoneStatePermission();
         applyImmersive();
     }
 
@@ -316,13 +311,7 @@ public class MainActivity extends Activity {
         deviceIdentityCard.setContentDescription("Mã thiết bị PDA");
         deviceIdentityCard.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                        && checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    requestPhoneStatePermission(true);
-                } else {
-                    showDeviceDiagnostic();
-                }
+                updateDeviceIdentityUi();
             }
         });
 
@@ -657,47 +646,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_PHONE_STATE) {
-            updateDeviceIdentityUi();
-        }
-    }
-
-    private void maybeRequestPhoneStatePermission() {
-        if (!DeviceIdentifier.isTargetPda()) return;
-        DeviceIdentifier.Result result = DeviceIdentifier.resolve(this);
-        if (result.isAvailable()) return;
-        requestPhoneStatePermission(false);
-    }
-
-    private void requestPhoneStatePermission(boolean force) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            updateDeviceIdentityUi();
-            return;
-        }
-
-        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                == PackageManager.PERMISSION_GRANTED) {
-            updateDeviceIdentityUi();
-            return;
-        }
-
-        android.content.SharedPreferences prefs =
-                getSharedPreferences("device_identifier_probe", MODE_PRIVATE);
-        boolean alreadyRequested = prefs.getBoolean("phone_state_requested", false);
-        if (!force && alreadyRequested) {
-            updateDeviceIdentityUi();
-            return;
-        }
-
-        prefs.edit().putBoolean("phone_state_requested", true).apply();
-        requestPermissions(
-                new String[] { Manifest.permission.READ_PHONE_STATE },
-                REQUEST_PHONE_STATE);
-    }
-
     private void updateDeviceIdentityUi() {
         if (deviceIdentityCard == null || deviceIdText == null
                 || deviceIdHint == null || deviceBarcode == null) return;
@@ -730,62 +678,7 @@ public class MainActivity extends Activity {
         deviceBarcode.setVisibility(View.GONE);
         deviceIdText.setText(result.label + ": Không đọc được");
 
-        boolean missingPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                && checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                != PackageManager.PERMISSION_GRANTED;
-        if (missingPermission) {
-            deviceIdHint.setText("Chạm vào đây để cấp quyền Điện thoại và thử lại");
-        } else {
-            deviceIdHint.setText("Không đọc được • chạm để xem chẩn đoán chi tiết");
-        }
-    }
-
-    private void showDeviceDiagnostic() {
-        final String report = DeviceIdentifier.diagnosticReport(this);
-
-        final TextView reportView = new TextView(this);
-        reportView.setText(report);
-        reportView.setTextSize(isCompactWidth() ? 10.5f : 11.5f);
-        reportView.setTextColor(0xFF152238);
-        reportView.setTextIsSelectable(true);
-        reportView.setPadding(dp(12), dp(8), dp(12), dp(8));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.addView(reportView, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT));
-
-        final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Chẩn đoán mã thiết bị")
-                .setMessage("Bản test chỉ đọc thông tin cục bộ trên PDA. Không tự gửi dữ liệu ra ngoài.")
-                .setView(scroll)
-                .setNegativeButton("Đóng", null)
-                .setPositiveButton("Sao chép báo cáo", null)
-                .create();
-
-        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
-            @Override public void onShow(DialogInterface d) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
-                    @Override public void onClick(View v) {
-                        try {
-                            ClipboardManager clipboard =
-                                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                            if (clipboard != null) {
-                                clipboard.setPrimaryClip(
-                                        ClipData.newPlainText("Launcher PDA diagnostic", report));
-                                Toast.makeText(MainActivity.this,
-                                        "Đã sao chép báo cáo chẩn đoán.", Toast.LENGTH_SHORT).show();
-                            }
-                        } catch (Exception e) {
-                            Toast.makeText(MainActivity.this,
-                                    "Không sao chép được báo cáo.", Toast.LENGTH_SHORT).show();
-                        }
-                    }
-                });
-            }
-        });
-        dialog.show();
+        deviceIdHint.setText("Không đọc được S/N thiết bị • chạm để thử lại");
     }
 
     private void applyImmersive() {
