@@ -47,6 +47,10 @@ public class GuardService extends AccessibilityService {
         String pkg = event.getPackageName().toString();
         String className = event.getClassName() == null ? "" : event.getClassName().toString();
 
+        if (Prefs.isGuardPaused(this)) {
+            return;
+        }
+
         if (pkg.equals(getPackageName())) {
             lastMeaningfulPackage = pkg;
             Prefs.clearUpdateSession(this);
