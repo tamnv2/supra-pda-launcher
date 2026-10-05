@@ -5,9 +5,6 @@ import android.content.SharedPreferences;
 import android.util.Base64;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 
@@ -26,7 +23,7 @@ final class PasswordStore {
     }
 
     static boolean verify(Context c, String candidate) {
-        if (candidate == null) return false;
+        if (candidate == null || !candidate.matches("\\d{8,}")) return false;
         try {
             SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
             String saltText = p.getString(KEY_SALT, null);
@@ -41,14 +38,8 @@ final class PasswordStore {
         }
     }
 
-    static boolean verifyRecovery(String candidate) {
-        if (candidate == null || candidate.length() <= 8) return false;
-        String token = new SimpleDateFormat("HHmm", Locale.US).format(new Date());
-        return candidate.contains(token);
-    }
-
     static boolean setPassword(Context c, String password) {
-        if (password == null || password.length() < 8) return false;
+        if (password == null || !password.matches("\\d{8,}")) return false;
         try {
             byte[] salt = new byte[16];
             new SecureRandom().nextBytes(salt);
