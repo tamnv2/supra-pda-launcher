@@ -2,6 +2,7 @@ package vn.supra.pdalauncher;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -15,6 +16,9 @@ final class Prefs {
     private static final String KEY_UPDATE_UNTIL = "update_until";
     private static final String KEY_UNINSTALL_UNTIL = "uninstall_until";
     private static final String KEY_UNINSTALL_PACKAGE = "uninstall_package";
+    private static final String KEY_GUARD_PAUSE_UNTIL_WALL = "guard_pause_until_wall";
+    private static final String KEY_GUARD_PAUSE_UNTIL_ELAPSED = "guard_pause_until_elapsed";
+    private static final long GUARD_PAUSE_MS = 5L * 60L * 1000L;
 
     private Prefs() {}
 
@@ -92,6 +96,50 @@ final class Prefs {
 
     static void clearUpdateSession(Context c) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UPDATE_UNTIL).apply();
+    }
+
+    static void beginGuardPause(Context c) {
+        long wallNow = System.currentTimeMillis();
+        long elapsedNow = SystemClock.elapsedRealtime();
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_GUARD_PAUSE_UNTIL_WALL, wallNow + GUARD_PAUSE_MS)
+                .putLong(KEY_GUARD_PAUSE_UNTIL_ELAPSED, elapsedNow + GUARD_PAUSE_MS)
+                .apply();
+    }
+
+    static boolean isGuardPaused(Context c) {
+        SharedPreferences p = c.getSharedPreferences(NAME, Context.MODE_PRIVATE);
+        long wallUntil = p.getLong(KEY_GUARD_PAUSE_UNTIL_WALL, 0L);
+        long elapsedUntil = p.getLong(KEY_GUARD_PAUSE_UNTIL_ELAPSED, 0L);
+        long wallRemaining = wallUntil - System.currentTimeMillis();
+        long elapsedRemaining = elapsedUntil - SystemClock.elapsedRealtime();
+
+        boolean valid = wallRemaining > 0L
+                && wallRemaining <= GUARD_PAUSE_MS
+                && elapsedRemaining > 0L
+                && elapsedRemaining <= GUARD_PAUSE_MS;
+
+        if (!valid && (wallUntil != 0L || elapsedUntil != 0L)) {
+            clearGuardPause(c);
+        }
+        return valid;
+    }
+
+    static long guardPauseRemainingMs(Context c) {
+        if (!isGuardPaused(c)) return 0L;
+        SharedPreferences p = c.getSharedPreferences(NAME, Context.MODE_PRIVATE);
+        long wallRemaining = p.getLong(KEY_GUARD_PAUSE_UNTIL_WALL, 0L)
+                - System.currentTimeMillis();
+        long elapsedRemaining = p.getLong(KEY_GUARD_PAUSE_UNTIL_ELAPSED, 0L)
+                - SystemClock.elapsedRealtime();
+        return Math.max(0L, Math.min(wallRemaining, elapsedRemaining));
+    }
+
+    static void clearGuardPause(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .remove(KEY_GUARD_PAUSE_UNTIL_WALL)
+                .remove(KEY_GUARD_PAUSE_UNTIL_ELAPSED)
+                .apply();
     }
 
     static void beginUninstallSession(Context c, String packageName) {
