@@ -199,15 +199,6 @@ public class AdminActivity extends Activity {
                     }
                 }));
 
-        root.addView(section("Sức khỏe PDA"));
-        root.addView(actionRow(android.R.drawable.ic_lock_idle_low_battery,
-                "Kiểm tra sức khỏe & pin PDA",
-                new View.OnClickListener() {
-                    @Override public void onClick(View v) {
-                        showPdaHealthReport();
-                    }
-                }));
-
         root.addView(section("Cài đặt nhanh"));
 
         root.addView(actionRow(android.R.drawable.ic_menu_manage,
@@ -490,20 +481,6 @@ public class AdminActivity extends Activity {
                     "Không mở được trình gỡ cài đặt: " + e.getMessage(),
                     Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void showPdaHealthReport() {
-        String report = PdaHealthAnalyzer.buildReport(this);
-        new AlertDialog.Builder(this)
-                .setTitle("Kiểm tra sức khỏe & pin PDA")
-                .setMessage(report)
-                .setNegativeButton("Đóng", null)
-                .setPositiveButton("Cài đặt pin", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, int which) {
-                        openSystemSettings("android.settings.BATTERY_SAVER_SETTINGS");
-                    }
-                })
-                .show();
     }
 
     private View section(String title) {
