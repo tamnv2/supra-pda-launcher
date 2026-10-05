@@ -609,7 +609,7 @@ public class AdminActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), 0, dp(18), 0);
-        final EditText p1 = passwordInput("Mật khẩu mới (tối thiểu 8 ký tự)");
+        final EditText p1 = passwordInput("Mật khẩu mới (tối thiểu 8 chữ số)");
         final EditText p2 = passwordInput("Nhập lại mật khẩu mới");
         box.addView(p1); box.addView(p2);
 
@@ -625,7 +625,7 @@ public class AdminActivity extends Activity {
                     @Override public void onClick(View v) {
                         String a = p1.getText().toString();
                         String b = p2.getText().toString();
-                        if (a.length() < 8) { p1.setError("Tối thiểu 8 ký tự"); return; }
+                        if (!a.matches("\\d{8,}")) { p1.setError("Chỉ nhập số, tối thiểu 8 chữ số"); return; }
                         if (!a.equals(b)) { p2.setError("Hai mật khẩu không giống nhau"); return; }
                         if (PasswordStore.setPassword(AdminActivity.this, a)) {
                             Toast.makeText(AdminActivity.this, "Đã đổi mật khẩu.", Toast.LENGTH_SHORT).show();
@@ -642,7 +642,7 @@ public class AdminActivity extends Activity {
         EditText e = new EditText(this);
         e.setHint(hint);
         e.setSingleLine(true);
-        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         return e;
     }
 
