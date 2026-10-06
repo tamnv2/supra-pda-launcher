@@ -3,6 +3,8 @@ package vn.supra.pdalauncher;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Environment;
 import android.os.StatFs;
 import android.util.DisplayMetrics;
@@ -23,17 +25,28 @@ final class DeviceRegistryClient {
     private static final String API_BASE = "https://inventory-beta.supra.cc.cd";
     private static final int SCHEMA_VERSION = 1;
     private static final long VALIDATION_INTERVAL_MS = 7L * 24L * 60L * 60L * 1000L;
-    private static final long RETRY_COOLDOWN_MS = 15L * 60L * 1000L;
+    private static final long[] RETRY_DELAYS_MS = new long[] {
+            30L * 1000L,
+            2L * 60L * 1000L,
+            5L * 60L * 1000L,
+            15L * 60L * 1000L
+    };
     private static final AtomicBoolean IN_FLIGHT = new AtomicBoolean(false);
+    private static final AtomicBoolean RETRY_SCHEDULED = new AtomicBoolean(false);
+    private static final Handler RETRY_HANDLER = new Handler(Looper.getMainLooper());
 
     private DeviceRegistryClient() {}
 
     static void retryPending(final Context context) {
         final Context app = context.getApplicationContext();
         if (Prefs.isRegistryRegistered(app)) return;
-        long lastAttempt = Prefs.getRegistryLastAttemptAt(app);
+
         long now = System.currentTimeMillis();
-        if (lastAttempt > 0L && now - lastAttempt < RETRY_COOLDOWN_MS) return;
+        long nextRetryAt = Prefs.getRegistryNextRetryAt(app);
+        if (nextRetryAt > now) {
+            scheduleRetry(app, nextRetryAt - now);
+            return;
+        }
         syncIfNeeded(app);
     }
 
@@ -51,17 +64,22 @@ final class DeviceRegistryClient {
                 boolean samePayload = snapshot.payloadHash.equals(Prefs.getRegistryPayloadHash(app));
                 long now = System.currentTimeMillis();
 
-                long lastAttempt = Prefs.getRegistryLastAttemptAt(app);
-                boolean retryCoolingDown = lastAttempt > 0L && now - lastAttempt < RETRY_COOLDOWN_MS;
+                if (!registered) {
+                    long nextRetryAt = Prefs.getRegistryNextRetryAt(app);
+                    if (nextRetryAt > now) {
+                        scheduleRetry(app, nextRetryAt - now);
+                        return;
+                    }
+                }
 
                 if (!registered || !sameDevice || !samePayload) {
-                    if (!retryCoolingDown) register(app, snapshot, now);
+                    register(app, snapshot, now);
                     return;
                 }
 
                 long lastValidated = Prefs.getRegistryLastValidatedAt(app);
                 if (lastValidated <= 0L || now - lastValidated >= VALIDATION_INTERVAL_MS) {
-                    if (!retryCoolingDown) validateOrRepair(app, snapshot, now);
+                    validateOrRepair(app, snapshot, now);
                 }
             } catch (Throwable ignored) {
                 // Registry sync is best-effort and must never affect launcher availability.
@@ -121,9 +139,23 @@ final class DeviceRegistryClient {
             }
 
             int code = connection.getResponseCode();
-            if (code != 200) return;
+            if (code != 200) {
+                if (isRetryableHttp(code)) schedulePendingRetry(context, System.currentTimeMillis());
+                return;
+            }
+
             JSONObject response = new JSONObject(readResponse(connection));
-            if (!response.optBoolean("registered", false)) return;
+            if (!response.optBoolean("registered", false)) {
+                schedulePendingRetry(context, System.currentTimeMillis());
+                return;
+            }
+
+            // Durable Object registration is not enough. Only mark success after
+            // Google Sheet persistence is acknowledged by the service.
+            if (!response.optBoolean("sheet_synced", false)) {
+                schedulePendingRetry(context, System.currentTimeMillis());
+                return;
+            }
 
             Prefs.markRegistrySuccess(
                     context,
@@ -132,10 +164,35 @@ final class DeviceRegistryClient {
                     response.optInt("registry_schema_version", SCHEMA_VERSION),
                     System.currentTimeMillis());
         } catch (Throwable ignored) {
-            // Retry only on a future launcher creation; no timer/background polling.
+            schedulePendingRetry(context, System.currentTimeMillis());
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private static boolean isRetryableHttp(int code) {
+        return code == 408 || code == 425 || code == 429 || code >= 500;
+    }
+
+    private static void schedulePendingRetry(Context context, long now) {
+        int step = Math.max(0, Prefs.getRegistryRetryStep(context));
+        int index = Math.min(step, RETRY_DELAYS_MS.length - 1);
+        long delay = RETRY_DELAYS_MS[index];
+        int nextStep = Math.min(step + 1, RETRY_DELAYS_MS.length - 1);
+        long nextRetryAt = now + delay;
+
+        Prefs.markRegistryPending(context, nextStep, nextRetryAt, now);
+        scheduleRetry(context, delay);
+    }
+
+    private static void scheduleRetry(Context context, long delayMs) {
+        final Context app = context.getApplicationContext();
+        if (!RETRY_SCHEDULED.compareAndSet(false, true)) return;
+
+        RETRY_HANDLER.postDelayed(() -> {
+            RETRY_SCHEDULED.set(false);
+            retryPending(app);
+        }, Math.max(1000L, delayMs));
     }
 
     private static String readResponse(HttpURLConnection connection) throws Exception {
