@@ -14,6 +14,7 @@ final class Prefs {
     private static final String KEY_LOW_BATTERY_ALERT = "low_battery_alert";
     private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
     private static final String KEY_UPDATE_UNTIL = "update_until";
+    private static final String KEY_UPDATE_LAST_CHECK_AT = "update_last_check_at";
     private static final String KEY_UNINSTALL_UNTIL = "uninstall_until";
     private static final String KEY_UNINSTALL_PACKAGE = "uninstall_package";
     private static final String KEY_GUARD_PAUSE_UNTIL_WALL = "guard_pause_until_wall";
@@ -103,6 +104,18 @@ final class Prefs {
 
     static void clearUpdateSession(Context c) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().remove(KEY_UPDATE_UNTIL).apply();
+    }
+
+
+    static long getLastUpdateCheckAt(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_UPDATE_LAST_CHECK_AT, 0L);
+    }
+
+    static void markUpdateCheck(Context c, long at) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_UPDATE_LAST_CHECK_AT, at)
+                .apply();
     }
 
     static void beginGuardPause(Context c) {

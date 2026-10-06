@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
         buildUi();
         updateDeviceIdentityUi();
         DeviceRegistryClient.syncIfNeeded(this);
+        UpdateManager.checkOnLaunch(this);
         applyImmersive();
     }
 

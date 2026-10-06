@@ -9,6 +9,8 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Method;
 import java.text.Normalizer;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class DeviceIdentifier {
     public static final class Result {
@@ -60,6 +62,11 @@ public final class DeviceIdentifier {
             this.normalized = normalized;
         }
     }
+
+    private static final Pattern NEWLAND_MT90_SERIAL =
+            Pattern.compile("(?i)(MT90[A-Z0-9._-]{6,39})");
+    private static final Pattern GENERIC_SERIAL_TOKEN =
+            Pattern.compile("([A-Za-z0-9][A-Za-z0-9._-]{5,39})");
 
     private DeviceIdentifier() { }
 
@@ -141,12 +148,36 @@ public final class DeviceIdentifier {
                 "persist.sys.device.serial"
         };
         for (String key : keys) {
-            Candidate value = cleanCandidate(systemProperty(key));
+            Candidate value = cleanNewlandCandidate(systemProperty(key));
             if (value != null) return value;
-            value = cleanCandidate(shellGetprop(key));
+            value = cleanNewlandCandidate(shellGetprop(key));
             if (value != null) return value;
         }
         return null;
+    }
+
+    private static Candidate cleanNewlandCandidate(String raw) {
+        if (raw == null) return null;
+        String value = raw.trim();
+        if (value.length() == 0) return null;
+
+        Matcher mt90 = NEWLAND_MT90_SERIAL.matcher(value);
+        if (mt90.find()) {
+            return cleanCandidate(mt90.group(1).toUpperCase(Locale.US));
+        }
+
+        Matcher tokenMatcher = GENERIC_SERIAL_TOKEN.matcher(value);
+        Candidate best = null;
+        while (tokenMatcher.find()) {
+            Candidate candidate = cleanCandidate(tokenMatcher.group(1));
+            if (candidate == null) continue;
+            if (best == null || candidate.normalized.length() > best.normalized.length()) {
+                best = candidate;
+            }
+        }
+        if (best != null) return best;
+
+        return cleanCandidate(value);
     }
 
     private static Candidate readUrovoImei() {
