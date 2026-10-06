@@ -516,7 +516,7 @@ final class LauncherDiagnostics {
         File dir = logDir(context);
         File main = new File(dir, FILE_PREFIX + date + FILE_SUFFIX);
         File sent = sentMarker(main);
-        if (sent.exists()) {
+        if (sent.exists() || closedMarker(main).exists()) {
             return new File(dir, FILE_PREFIX + date + LATE_SUFFIX);
         }
         return main;
@@ -557,6 +557,7 @@ final class LauncherDiagnostics {
                 if (!isUploadDue(deviceKey, date)) continue;
                 if (!retryDue(file)) continue;
 
+                closeForUpload(file);
                 boolean success = uploadFile(context, file, deviceKey, date);
                 if (success) {
                     markSent(file);
@@ -658,7 +659,7 @@ final class LauncherDiagnostics {
 
             JSONObject body = new JSONObject();
             body.put("schema", "supra-launcher-log-v1");
-            body.put("generated_at", isoNow());
+            body.put("generated_at", lastTs.isEmpty() ? isoNow() : lastTs);
             body.put("severity", "INFO");
             body.put("reason", suffix.equals("late")
                     ? "launcher_daily_diagnostic_late"
@@ -798,6 +799,19 @@ final class LauncherDiagnostics {
         return new File(file.getParentFile(), file.getName() + ".retry");
     }
 
+    private static File closedMarker(File file) {
+        return new File(file.getParentFile(), file.getName() + ".closed");
+    }
+
+    private static void closeForUpload(File file) {
+        if (file.getName().contains("-late")) return;
+        if (closedMarker(file).exists()) return;
+        try (BufferedWriter writer =
+                     new BufferedWriter(new FileWriter(closedMarker(file), false))) {
+            writer.write(isoNow());
+        } catch (Throwable ignored) { }
+    }
+
     private static String dateFromFile(File file) {
         String name = file.getName();
         if (!name.startsWith(FILE_PREFIX) || name.length() < FILE_PREFIX.length() + 10) {
@@ -816,7 +830,9 @@ final class LauncherDiagnostics {
 
         for (File file : files) {
             try {
-                if (file.getName().endsWith(".sent") || file.getName().endsWith(".retry")) {
+                if (file.getName().endsWith(".sent")
+                        || file.getName().endsWith(".retry")
+                        || file.getName().endsWith(".closed")) {
                     if (file.lastModified() < sentCutoff) file.delete();
                     continue;
                 }
@@ -826,10 +842,12 @@ final class LauncherDiagnostics {
                         file.delete();
                         sentMarker(file).delete();
                         retryMarker(file).delete();
+                        closedMarker(file).delete();
                     }
                 } else if (file.lastModified() < unsentCutoff) {
                     file.delete();
                     retryMarker(file).delete();
+                    closedMarker(file).delete();
                 }
             } catch (Throwable ignored) { }
         }
