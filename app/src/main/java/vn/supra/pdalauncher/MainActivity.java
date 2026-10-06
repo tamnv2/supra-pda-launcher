@@ -43,6 +43,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.TimeZone;
 
 public class MainActivity extends Activity {
     private static final int GRID_COLUMNS = 3;
@@ -95,7 +96,6 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        PasswordStore.ensureInitialized(this);
         LauncherDiagnostics.initialize(this);
         buildUi();
         updateDeviceIdentityUi();
@@ -538,37 +538,48 @@ public class MainActivity extends Activity {
 
     private void showAdminLogin() {
         final EditText input = new EditText(this);
-        input.setHint("Nhập mật khẩu quản trị");
+        input.setHint("Mã 4 số hôm nay hoặc mật khẩu khẩn cấp");
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setPadding(dp(16), dp(6), dp(16), dp(6));
 
         final AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Cài đặt quản trị")
+                .setMessage("Mã quản trị đổi lúc 05:00 mỗi ngày theo giờ Việt Nam. Quên mã có thể gửi lại qua email quản trị.")
                 .setView(input)
                 .setNegativeButton("Hủy", null)
+                .setNeutralButton("Gửi lại mã", null)
                 .setPositiveButton("Mở", null)
                 .create();
 
         dialog.setOnShowListener(new DialogInterface.OnShowListener() {
             @Override public void onShow(DialogInterface d) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                final Button openButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                final Button resetButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+
+                openButton.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
-                        String value = input.getText().toString();
-                        if (PasswordStore.verify(MainActivity.this, value)
-                                || TimeCodeVerifier.verify(value)) {
-                            LauncherDiagnostics.recordSecurityEvent(
-                                    MainActivity.this, "admin_login", true);
-                            Prefs.beginAdminSession(MainActivity.this);
-                            dialog.dismiss();
-                            startActivity(new Intent(MainActivity.this, AdminActivity.class));
-                        } else {
-                            LauncherDiagnostics.recordSecurityEvent(
-                                    MainActivity.this, "admin_login", false);
-                            input.setError("Mật khẩu không đúng");
-                        }
+                        verifyAdminCredential(
+                                input,
+                                dialog,
+                                openButton,
+                                "admin_login",
+                                new Runnable() {
+                                    @Override public void run() {
+                                        Prefs.beginAdminSession(MainActivity.this);
+                                        startActivity(new Intent(MainActivity.this, AdminActivity.class));
+                                    }
+                                });
                     }
                 });
+
+                resetButton.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        requestDailyPasswordReset(dialog, resetButton);
+                    }
+                });
+
+                refreshDailyPasswordStatus(dialog, resetButton);
             }
         });
         dialog.show();
@@ -587,14 +598,14 @@ public class MainActivity extends Activity {
 
     private void showGuardPauseLogin() {
         final EditText input = new EditText(this);
-        input.setHint("Nhập mật khẩu quản trị");
+        input.setHint("Mã 4 số hôm nay hoặc mật khẩu khẩn cấp");
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setPadding(dp(16), dp(6), dp(16), dp(6));
 
         final AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Tạm hoãn chống lách 5 phút")
-                .setMessage("Trong 5 phút, Launcher sẽ không tự kéo về màn hình chính khi mở Cài đặt hoặc trình cài ứng dụng.")
+                .setMessage("Nhập mã quản trị hôm nay hoặc mật khẩu khẩn cấp. Trong 5 phút, Launcher sẽ không tự kéo về màn hình chính khi mở Cài đặt hoặc trình cài ứng dụng.")
                 .setView(input)
                 .setNegativeButton("Hủy", null)
                 .setPositiveButton("Tạm hoãn", null)
@@ -602,29 +613,180 @@ public class MainActivity extends Activity {
 
         dialog.setOnShowListener(new DialogInterface.OnShowListener() {
             @Override public void onShow(DialogInterface d) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                final Button pauseButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                pauseButton.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
-                        String value = input.getText().toString();
-                        if (PasswordStore.verify(MainActivity.this, value)
-                                || TimeCodeVerifier.verify(value)) {
-                            LauncherDiagnostics.recordSecurityEvent(
-                                    MainActivity.this, "guard_pause", true);
-                            Prefs.beginGuardPause(MainActivity.this);
-                            dialog.dismiss();
-                            updateGuardPauseUi();
-                            Toast.makeText(MainActivity.this,
-                                    "Đã tạm hoãn chống lách trong 5 phút.",
-                                    Toast.LENGTH_LONG).show();
-                        } else {
-                            LauncherDiagnostics.recordSecurityEvent(
-                                    MainActivity.this, "guard_pause", false);
-                            input.setError("Mật khẩu không đúng");
-                        }
+                        verifyAdminCredential(
+                                input,
+                                dialog,
+                                pauseButton,
+                                "guard_pause",
+                                new Runnable() {
+                                    @Override public void run() {
+                                        Prefs.beginGuardPause(MainActivity.this);
+                                        updateGuardPauseUi();
+                                        Toast.makeText(MainActivity.this,
+                                                "Đã tạm hoãn chống lách trong 5 phút.",
+                                                Toast.LENGTH_LONG).show();
+                                    }
+                                });
                     }
                 });
             }
         });
         dialog.show();
+    }
+
+    private void verifyAdminCredential(
+            final EditText input,
+            final AlertDialog dialog,
+            final Button actionButton,
+            final String eventName,
+            final Runnable onSuccess) {
+        final String value = input.getText().toString().trim();
+
+        if (TimeCodeVerifier.verify(value)) {
+            LauncherDiagnostics.recordSecurityEvent(this, eventName, true);
+            dialog.dismiss();
+            onSuccess.run();
+            return;
+        }
+
+        if (!value.matches("\\d{4}")) {
+            LauncherDiagnostics.recordSecurityEvent(this, eventName, false);
+            input.setError("Nhập mã ngày gồm 4 chữ số hoặc mật khẩu khẩn cấp.");
+            return;
+        }
+
+        actionButton.setEnabled(false);
+        LauncherPasswordClient.verify(this, value, new LauncherPasswordClient.Callback() {
+            @Override public void onResult(LauncherPasswordClient.Result result) {
+                actionButton.setEnabled(true);
+                if (result.requestOk && result.valid) {
+                    LauncherDiagnostics.recordSecurityEvent(MainActivity.this, eventName, true);
+                    dialog.dismiss();
+                    onSuccess.run();
+                    return;
+                }
+
+                LauncherDiagnostics.recordSecurityEvent(MainActivity.this, eventName, false);
+                if ("too_many_attempts".equalsIgnoreCase(result.error) || result.retryAfterSeconds > 0) {
+                    input.setError("Sai quá nhiều lần. Thử lại sau "
+                            + formatCooldown(result.retryAfterSeconds) + ".");
+                } else if ("device_not_registered".equalsIgnoreCase(result.error)
+                        || "PDA_NOT_REGISTERED".equalsIgnoreCase(result.error)) {
+                    input.setError("PDA chưa đồng bộ danh tính. Kết nối mạng rồi thử lại hoặc dùng mật khẩu khẩn cấp.");
+                } else if (!result.requestOk) {
+                    input.setError("Không xác thực được mã ngày. Kiểm tra mạng hoặc dùng mật khẩu khẩn cấp.");
+                } else {
+                    input.setError("Mã quản trị hôm nay không đúng.");
+                }
+            }
+        });
+    }
+
+    private void refreshDailyPasswordStatus(
+            final AlertDialog dialog,
+            final Button resetButton) {
+        LauncherPasswordClient.status(this, new LauncherPasswordClient.Callback() {
+            @Override public void onResult(LauncherPasswordClient.Result result) {
+                if (!result.requestOk) return;
+                StringBuilder message = new StringBuilder(
+                        "Mã quản trị đổi lúc 05:00 mỗi ngày theo giờ Việt Nam.");
+                if (!result.operationalDate.isEmpty()) {
+                    message.append("\nMã ngày: ").append(result.operationalDate);
+                }
+                if (!result.validUntilVn.isEmpty()) {
+                    message.append(" • hiệu lực đến ").append(result.validUntilVn);
+                }
+                if (result.resetCooldownSeconds > 0) {
+                    message.append("\nCó thể gửi lại sau ")
+                            .append(formatCooldown(result.resetCooldownSeconds))
+                            .append(".");
+                }
+                dialog.setMessage(message.toString());
+                applyResetCooldown(resetButton, result.resetCooldownSeconds);
+            }
+        });
+    }
+
+    private void requestDailyPasswordReset(
+            final AlertDialog dialog,
+            final Button resetButton) {
+        resetButton.setEnabled(false);
+        resetButton.setText("Đang gửi...");
+        LauncherPasswordClient.reset(this, new LauncherPasswordClient.Callback() {
+            @Override public void onResult(LauncherPasswordClient.Result result) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        MainActivity.this,
+                        "admin_code_reset",
+                        result.requestOk ? "sent" : (result.error.isEmpty() ? "failed" : result.error));
+
+                if (result.requestOk) {
+                    Toast.makeText(MainActivity.this,
+                            "Đã gửi mã quản trị mới tới tam95.supra@gmail.com.",
+                            Toast.LENGTH_LONG).show();
+                    refreshDailyPasswordStatus(dialog, resetButton);
+                    applyResetCooldown(resetButton,
+                            Math.max(result.resetCooldownSeconds, 15 * 60));
+                    return;
+                }
+
+                if ("reset_cooldown".equalsIgnoreCase(result.error)
+                        || result.resetCooldownSeconds > 0) {
+                    applyResetCooldown(resetButton, result.resetCooldownSeconds);
+                    Toast.makeText(MainActivity.this,
+                            "Chưa thể gửi lại. Còn "
+                                    + formatCooldown(result.resetCooldownSeconds) + ".",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                resetButton.setEnabled(true);
+                resetButton.setText("Gửi lại mã");
+                if ("MAIL_SEND_FAILED".equalsIgnoreCase(result.error)) {
+                    Toast.makeText(MainActivity.this,
+                            "Email chưa gửi thành công. Hệ thống sẽ tự thử lại; có thể dùng mật khẩu khẩn cấp.",
+                            Toast.LENGTH_LONG).show();
+                } else if ("device_not_registered".equalsIgnoreCase(result.error)
+                        || "PDA_NOT_REGISTERED".equalsIgnoreCase(result.error)) {
+                    Toast.makeText(MainActivity.this,
+                            "PDA chưa đồng bộ danh tính. Kết nối mạng rồi thử lại.",
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            "Không gửi lại được mã. Kiểm tra mạng rồi thử lại.",
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+    }
+
+    private void applyResetCooldown(final Button button, int seconds) {
+        if (button == null) return;
+        final int remaining = Math.max(0, seconds);
+        if (remaining <= 0) {
+            button.setEnabled(true);
+            button.setText("Gửi lại mã");
+            return;
+        }
+
+        button.setEnabled(false);
+        button.setText("Gửi lại sau " + formatCooldown(remaining));
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!button.isAttachedToWindow()) return;
+                button.setEnabled(true);
+                button.setText("Gửi lại mã");
+            }
+        }, remaining * 1000L);
+    }
+
+    private String formatCooldown(int seconds) {
+        int value = Math.max(0, seconds);
+        if (value < 60) return value + " giây";
+        int minutes = (value + 59) / 60;
+        return minutes + " phút";
     }
 
     private void updateGuardPauseUi() {
@@ -654,9 +816,10 @@ public class MainActivity extends Activity {
     private void refreshTimeState() {
         boolean autoTime = readGlobalFlag(Settings.Global.AUTO_TIME);
         boolean autoTimeZone = readGlobalFlag(Settings.Global.AUTO_TIME_ZONE);
+        boolean vietnamTimeZone = isVietnamTimeZone();
         systemTimeInvalid = isSystemTimeInvalid();
 
-        boolean showWarning = !autoTime || !autoTimeZone || systemTimeInvalid;
+        boolean showWarning = !autoTime || !autoTimeZone || !vietnamTimeZone || systemTimeInvalid;
         if (timeWarningCard != null) {
             timeWarningCard.setVisibility(showWarning ? View.VISIBLE : View.GONE);
         }
@@ -675,6 +838,9 @@ public class MainActivity extends Activity {
             timeWarningText.setText("Hãy bật Ngày giờ tự động.");
         } else if (!autoTimeZone) {
             timeWarningText.setText("Hãy bật Múi giờ tự động.");
+        } else if (!vietnamTimeZone) {
+            timeWarningText.setText(
+                    "Múi giờ PDA chưa phải UTC+07:00. Launcher vẫn dùng giờ Việt Nam cho mã quản trị; hãy chỉnh lại múi giờ thiết bị.");
         } else {
             timeWarningText.setText("Ngày giờ PDA chưa đúng. Hãy đồng bộ lại trước khi làm việc.");
         }
@@ -690,10 +856,21 @@ public class MainActivity extends Activity {
 
     private boolean isSystemTimeInvalid() {
         try {
-            int year = Calendar.getInstance().get(Calendar.YEAR);
+            Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Ho_Chi_Minh"));
+            int year = calendar.get(Calendar.YEAR);
             return year < 2025 || year > 2100;
         } catch (Exception e) {
             return true;
+        }
+    }
+
+    private boolean isVietnamTimeZone() {
+        try {
+            TimeZone zone = TimeZone.getDefault();
+            long now = System.currentTimeMillis();
+            return zone.getOffset(now) == 7 * 60 * 60 * 1000;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -729,8 +906,10 @@ public class MainActivity extends Activity {
 
     private void updateClock() {
         if (clock != null) {
-            clock.setText(new SimpleDateFormat(
-                    "HH:mm  •  dd/MM/yyyy", Locale.getDefault()).format(new Date()));
+            SimpleDateFormat formatter = new SimpleDateFormat(
+                    "HH:mm  •  dd/MM/yyyy", Locale.getDefault());
+            formatter.setTimeZone(TimeZone.getTimeZone("Asia/Ho_Chi_Minh"));
+            clock.setText(formatter.format(new Date()));
         }
     }
 
