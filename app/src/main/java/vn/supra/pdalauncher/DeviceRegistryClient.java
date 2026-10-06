@@ -23,9 +23,19 @@ final class DeviceRegistryClient {
     private static final String API_BASE = "https://inventory-beta.supra.cc.cd";
     private static final int SCHEMA_VERSION = 1;
     private static final long VALIDATION_INTERVAL_MS = 7L * 24L * 60L * 60L * 1000L;
+    private static final long RETRY_COOLDOWN_MS = 15L * 60L * 1000L;
     private static final AtomicBoolean IN_FLIGHT = new AtomicBoolean(false);
 
     private DeviceRegistryClient() {}
+
+    static void retryPending(final Context context) {
+        final Context app = context.getApplicationContext();
+        if (Prefs.isRegistryRegistered(app)) return;
+        long lastAttempt = Prefs.getRegistryLastAttemptAt(app);
+        long now = System.currentTimeMillis();
+        if (lastAttempt > 0L && now - lastAttempt < RETRY_COOLDOWN_MS) return;
+        syncIfNeeded(app);
+    }
 
     static void syncIfNeeded(final Context context) {
         final Context app = context.getApplicationContext();
@@ -41,14 +51,17 @@ final class DeviceRegistryClient {
                 boolean samePayload = snapshot.payloadHash.equals(Prefs.getRegistryPayloadHash(app));
                 long now = System.currentTimeMillis();
 
+                long lastAttempt = Prefs.getRegistryLastAttemptAt(app);
+                boolean retryCoolingDown = lastAttempt > 0L && now - lastAttempt < RETRY_COOLDOWN_MS;
+
                 if (!registered || !sameDevice || !samePayload) {
-                    register(app, snapshot, now);
+                    if (!retryCoolingDown) register(app, snapshot, now);
                     return;
                 }
 
                 long lastValidated = Prefs.getRegistryLastValidatedAt(app);
                 if (lastValidated <= 0L || now - lastValidated >= VALIDATION_INTERVAL_MS) {
-                    validateOrRepair(app, snapshot, now);
+                    if (!retryCoolingDown) validateOrRepair(app, snapshot, now);
                 }
             } catch (Throwable ignored) {
                 // Registry sync is best-effort and must never affect launcher availability.
