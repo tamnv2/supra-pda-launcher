@@ -117,3 +117,51 @@ jobs:
               --title "SUPRA PDA Launcher $TAG" \
               --generate-notes
           fi
+
+      - name: Publish fixed Launcher update channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SOURCE="${{ github.sha }}"
+          SRC="dist/SUPRA-PDA-Launcher-v${VERSION}.apk"
+          CHANNEL_APK="dist/SUPRA-PDA-Launcher-latest.apk"
+          CHANNEL_SHA="${CHANNEL_APK}.sha256"
+          CHANNEL_JSON="dist/launcher-latest.json"
+
+          cp "$SRC" "$CHANNEL_APK"
+          SHA256="$(sha256sum "$CHANNEL_APK" | awk '{print $1}')"
+          SIZE_BYTES="$(stat -c%s "$CHANNEL_APK")"
+          printf '%s  %s\n' "$SHA256" "$(basename "$CHANNEL_APK")" > "$CHANNEL_SHA"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --argjson version_code "$VERSION_CODE" \
+            --arg tag "$TAG" \
+            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg source "$SOURCE" \
+            --argjson size_bytes "$SIZE_BYTES" \
+            --arg sha256 "$SHA256" \
+            '{
+              version: $version,
+              version_code: $version_code,
+              tag: $tag,
+              published_at: $published_at,
+              source: $source,
+              size_bytes: $size_bytes,
+              sha256: $sha256
+            }' > "$CHANNEL_JSON"
+
+          CHANNEL_TAG="launcher-channel"
+          if gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
+            gh release upload "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" --clobber
+          else
+            gh release create "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" \
+              --target "${{ github.sha }}" \
+              --title "SUPRA PDA Launcher Update Channel" \
+              --notes "Fixed asset channel consumed by inventory-beta.supra.cc.cd. Do not delete while Launcher auto-update is active."
+          fi
