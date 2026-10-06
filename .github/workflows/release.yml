@@ -159,9 +159,11 @@ jobs:
           CHANNEL_TAG="launcher-channel"
           if gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
             gh release upload "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" --clobber
+            gh release edit "$CHANNEL_TAG" --prerelease
           else
             gh release create "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" \
               --target "${{ github.sha }}" \
               --title "SUPRA PDA Launcher Update Channel" \
-              --notes "Fixed asset channel consumed by inventory-beta.supra.cc.cd. Do not delete while Launcher auto-update is active."
+              --notes "Fixed asset channel consumed by inventory-beta.supra.cc.cd. Do not delete while Launcher auto-update is active." \
+              --prerelease
           fi
