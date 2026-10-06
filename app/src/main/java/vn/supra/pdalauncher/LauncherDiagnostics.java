@@ -195,6 +195,20 @@ final class LauncherDiagnostics {
         });
     }
 
+    static void recordOperationalEvent(Context context, String event, String detail) {
+        final Context app = context.getApplicationContext();
+        final String safeEvent = safeText(event, 80);
+        final String safeDetail = safeText(detail, 120);
+        IO.execute(() -> {
+            try {
+                JSONObject data = new JSONObject();
+                data.put("action", safeEvent);
+                if (!safeDetail.isEmpty()) data.put("detail", safeDetail);
+                appendEventSync(app, "operational_event", data, true);
+            } catch (Throwable ignored) { }
+        });
+    }
+
     private static void maintenanceSync(Context context, boolean allowSample) {
         try {
             if (allowSample && isOperationalSamplingWindow()) {
