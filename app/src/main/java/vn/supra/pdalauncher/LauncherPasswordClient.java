@@ -79,6 +79,7 @@ final class LauncherPasswordClient {
             JSONObject body,
             Callback callback) {
         final Context app = context.getApplicationContext();
+        final JSONObject suppliedBody = body;
         new Thread(() -> {
             String deviceKey = DeviceRegistryClient.currentDeviceKey(app);
             if (deviceKey.isEmpty()) {
@@ -93,8 +94,8 @@ final class LauncherPasswordClient {
                 if ("GET".equals(method)) {
                     endpoint += "?device_key=" + deviceKey;
                 } else {
-                    if (body == null) body = new JSONObject();
-                    body.put("device_key", deviceKey);
+                    JSONObject requestBody = suppliedBody == null ? new JSONObject() : suppliedBody;
+                    requestBody.put("device_key", deviceKey);
                 }
 
                 connection = (HttpURLConnection) new URL(endpoint).openConnection();
@@ -108,7 +109,8 @@ final class LauncherPasswordClient {
                 if (!"GET".equals(method)) {
                     connection.setDoOutput(true);
                     connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                    byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                    JSONObject requestBody = suppliedBody == null ? new JSONObject() : suppliedBody;
+                    byte[] bytes = requestBody.toString().getBytes(StandardCharsets.UTF_8);
                     connection.setFixedLengthStreamingMode(bytes.length);
                     try (OutputStream output = connection.getOutputStream()) {
                         output.write(bytes);
