@@ -108,6 +108,8 @@ public class MainActivity extends Activity {
         refreshTimeState();
         updateDeviceIdentityUi();
         updateGuardPauseUi();
+        DeviceRegistryClient.retryPending(this);
+        UpdateManager.checkOnLaunch(this);
         applyImmersive();
 
         handler.removeCallbacks(clockTick);
