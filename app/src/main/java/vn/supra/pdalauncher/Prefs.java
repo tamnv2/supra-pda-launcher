@@ -27,6 +27,8 @@ final class Prefs {
     private static final String KEY_REG_LAST_VALIDATED_AT = "registry_last_validated_at";
     private static final String KEY_REG_LAST_ATTEMPT_AT = "registry_last_attempt_at";
     private static final String KEY_REG_SCHEMA_VERSION = "registry_schema_version";
+    private static final String KEY_REG_RETRY_STEP = "registry_retry_step";
+    private static final String KEY_REG_NEXT_RETRY_AT = "registry_next_retry_at";
 
     private Prefs() {}
 
@@ -188,6 +190,16 @@ final class Prefs {
                 .getLong(KEY_REG_LAST_ATTEMPT_AT, 0L);
     }
 
+    static int getRegistryRetryStep(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getInt(KEY_REG_RETRY_STEP, 0);
+    }
+
+    static long getRegistryNextRetryAt(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_REG_NEXT_RETRY_AT, 0L);
+    }
+
     static void markRegistryAttempt(Context c, long at) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_REG_LAST_ATTEMPT_AT, at)
@@ -203,9 +215,20 @@ final class Prefs {
                 .putBoolean(KEY_REG_REGISTERED, true)
                 .putInt(KEY_REG_SCHEMA_VERSION, schemaVersion)
                 .putLong(KEY_REG_LAST_VALIDATED_AT, at)
-                .putLong(KEY_REG_LAST_ATTEMPT_AT, at);
+                .putLong(KEY_REG_LAST_ATTEMPT_AT, at)
+                .putInt(KEY_REG_RETRY_STEP, 0)
+                .remove(KEY_REG_NEXT_RETRY_AT);
         if (registeredAt <= 0L) editor.putLong(KEY_REG_REGISTERED_AT, at);
         editor.apply();
+    }
+
+    static void markRegistryPending(Context c, int retryStep, long nextRetryAt, long at) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_REG_REGISTERED, false)
+                .putInt(KEY_REG_RETRY_STEP, Math.max(0, retryStep))
+                .putLong(KEY_REG_NEXT_RETRY_AT, Math.max(0L, nextRetryAt))
+                .putLong(KEY_REG_LAST_ATTEMPT_AT, at)
+                .apply();
     }
 
     static void markRegistryValidated(Context c, long at) {
