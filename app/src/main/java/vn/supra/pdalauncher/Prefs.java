@@ -19,6 +19,13 @@ final class Prefs {
     private static final String KEY_GUARD_PAUSE_UNTIL_WALL = "guard_pause_until_wall";
     private static final String KEY_GUARD_PAUSE_UNTIL_ELAPSED = "guard_pause_until_elapsed";
     private static final long GUARD_PAUSE_MS = 5L * 60L * 1000L;
+    private static final String KEY_REG_DEVICE_KEY = "registry_device_key";
+    private static final String KEY_REG_PAYLOAD_HASH = "registry_payload_hash";
+    private static final String KEY_REG_REGISTERED = "registry_registered";
+    private static final String KEY_REG_REGISTERED_AT = "registry_registered_at";
+    private static final String KEY_REG_LAST_VALIDATED_AT = "registry_last_validated_at";
+    private static final String KEY_REG_LAST_ATTEMPT_AT = "registry_last_attempt_at";
+    private static final String KEY_REG_SCHEMA_VERSION = "registry_schema_version";
 
     private Prefs() {}
 
@@ -139,6 +146,66 @@ final class Prefs {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
                 .remove(KEY_GUARD_PAUSE_UNTIL_WALL)
                 .remove(KEY_GUARD_PAUSE_UNTIL_ELAPSED)
+                .apply();
+    }
+
+
+    static String getRegistryDeviceKey(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_REG_DEVICE_KEY, "");
+    }
+
+    static String getRegistryPayloadHash(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_REG_PAYLOAD_HASH, "");
+    }
+
+    static boolean isRegistryRegistered(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_REG_REGISTERED, false);
+    }
+
+    static long getRegistryLastValidatedAt(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_REG_LAST_VALIDATED_AT, 0L);
+    }
+
+    static long getRegistryLastAttemptAt(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_REG_LAST_ATTEMPT_AT, 0L);
+    }
+
+    static void markRegistryAttempt(Context c, long at) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putLong(KEY_REG_LAST_ATTEMPT_AT, at)
+                .apply();
+    }
+
+    static void markRegistrySuccess(Context c, String deviceKey, String payloadHash, int schemaVersion, long at) {
+        SharedPreferences prefs = c.getSharedPreferences(NAME, Context.MODE_PRIVATE);
+        long registeredAt = prefs.getLong(KEY_REG_REGISTERED_AT, 0L);
+        SharedPreferences.Editor editor = prefs.edit()
+                .putString(KEY_REG_DEVICE_KEY, deviceKey == null ? "" : deviceKey)
+                .putString(KEY_REG_PAYLOAD_HASH, payloadHash == null ? "" : payloadHash)
+                .putBoolean(KEY_REG_REGISTERED, true)
+                .putInt(KEY_REG_SCHEMA_VERSION, schemaVersion)
+                .putLong(KEY_REG_LAST_VALIDATED_AT, at)
+                .putLong(KEY_REG_LAST_ATTEMPT_AT, at);
+        if (registeredAt <= 0L) editor.putLong(KEY_REG_REGISTERED_AT, at);
+        editor.apply();
+    }
+
+    static void markRegistryValidated(Context c, long at) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_REG_REGISTERED, true)
+                .putLong(KEY_REG_LAST_VALIDATED_AT, at)
+                .putLong(KEY_REG_LAST_ATTEMPT_AT, at)
+                .apply();
+    }
+
+    static void markRegistryMissing(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_REG_REGISTERED, false)
                 .apply();
     }
 

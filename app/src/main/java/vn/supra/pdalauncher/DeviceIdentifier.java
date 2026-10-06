@@ -2,24 +2,48 @@ package vn.supra.pdalauncher;
 
 import android.content.Context;
 import android.os.Build;
+import android.provider.Settings;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.text.Normalizer;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public final class DeviceIdentifier {
     public static final class Result {
         public final String label;
         public final String value;
         public final String detail;
+        public final String source;
+        public final String raw;
+        public final String normalized;
+        public final String serialRaw;
+        public final String serialNormalized;
+        public final String imei1;
+        public final String androidId;
 
-        Result(String label, String value, String detail) {
+        Result(
+                String label,
+                String value,
+                String detail,
+                String source,
+                String raw,
+                String normalized,
+                String serialRaw,
+                String serialNormalized,
+                String imei1,
+                String androidId) {
             this.label = label;
             this.value = value;
             this.detail = detail;
+            this.source = source;
+            this.raw = raw;
+            this.normalized = normalized;
+            this.serialRaw = serialRaw;
+            this.serialNormalized = serialNormalized;
+            this.imei1 = imei1;
+            this.androidId = androidId;
         }
 
         public boolean isAvailable() {
@@ -27,8 +51,15 @@ public final class DeviceIdentifier {
         }
     }
 
-    private static final Pattern MT90_SERIAL =
-            Pattern.compile("(?i)(MT90[A-Z0-9]+)");
+    private static final class Candidate {
+        final String raw;
+        final String normalized;
+
+        Candidate(String raw, String normalized) {
+            this.raw = raw;
+            this.normalized = normalized;
+        }
+    }
 
     private DeviceIdentifier() { }
 
@@ -36,82 +67,137 @@ public final class DeviceIdentifier {
         String manufacturer = safe(Build.MANUFACTURER);
         String model = safe(Build.MODEL);
         String fingerprint = (manufacturer + " " + model).toLowerCase(Locale.US);
+        String androidId = readAndroidId(context);
+
+        Candidate serial = null;
+        Candidate imei = null;
 
         if (fingerprint.contains("newland") || fingerprint.contains("mt90")) {
-            String serial = readNewlandMt90Serial();
-            return serial != null
-                    ? new Result("S/N", serial, manufacturer + " " + model)
-                    : new Result("S/N", null, "Không đọc được S/N • " + manufacturer + " " + model);
+            serial = readNewlandSerial();
+            if (serial == null) serial = readGenericSerial();
+        } else if (fingerprint.contains("urovo") || fingerprint.contains("dt50")) {
+            imei = readUrovoImei();
+            serial = readUrovoSerial();
+            if (serial == null) serial = readGenericSerial();
+        } else {
+            serial = readGenericSerial();
         }
 
-        if (fingerprint.contains("urovo") || fingerprint.contains("dt50")) {
-            String serial = readUrovoSerial();
-            return serial != null
-                    ? new Result("S/N", serial, manufacturer + " " + model)
-                    : new Result("S/N", null, "Không đọc được S/N • " + manufacturer + " " + model);
+        Candidate primary;
+        String source;
+        String label;
+
+        if (imei != null) {
+            primary = imei;
+            source = "IMEI1";
+            label = "IMEI1";
+        } else if (serial != null) {
+            primary = serial;
+            source = "SERIAL";
+            label = "S/N";
+        } else {
+            Candidate android = cleanCandidate(androidId);
+            if (android != null) {
+                primary = android;
+                source = "ANDROID_ID";
+                label = "ID";
+            } else {
+                primary = null;
+                source = "UNAVAILABLE";
+                label = "S/N";
+            }
         }
 
-        String serial = readGenericSerial();
-        return serial != null
-                ? new Result("S/N", serial, manufacturer + " " + model)
-                : new Result("S/N", null, "Không đọc được S/N • " + manufacturer + " " + model);
+        String detail = manufacturer + " " + model;
+        if (primary == null) {
+            return new Result(
+                    label, null, "Không đọc được mã thiết bị • " + detail,
+                    source, "", "", serial == null ? "" : serial.raw,
+                    serial == null ? "" : serial.normalized,
+                    imei == null ? "" : imei.normalized,
+                    androidId == null ? "" : androidId);
+        }
+
+        return new Result(
+                label,
+                primary.raw,
+                detail,
+                source,
+                primary.raw,
+                primary.normalized,
+                serial == null ? "" : serial.raw,
+                serial == null ? "" : serial.normalized,
+                imei == null ? "" : imei.normalized,
+                androidId == null ? "" : androidId);
     }
 
-    private static String readNewlandMt90Serial() {
-        String raw = firstNonEmpty(
-                systemProperty("vendor.gsm.serial"),
-                shellGetprop("vendor.gsm.serial"));
-
-        String serial = extractMt90Serial(raw);
-        if (serial != null) return serial;
-
-        raw = firstNonEmpty(
-                systemProperty("ro.vendor.gsm.serial"),
-                shellGetprop("ro.vendor.gsm.serial"));
-        serial = extractMt90Serial(raw);
-        if (serial != null) return serial;
-
-        return extractMt90Serial(readGenericSerial());
-    }
-
-    private static String readUrovoSerial() {
-        String value = cleanSerial(invokeUrovoMethod("getDeviceId"));
-        if (value != null) return value;
-
-        value = cleanSerial(invokeUrovoMethod("getTIDSN"));
-        if (value != null) return value;
-
-        value = cleanSerial(rawBuildGetSerial());
-        if (value != null) return value;
-
-        try {
-            value = cleanSerial(Build.SERIAL);
+    private static Candidate readNewlandSerial() {
+        String[] keys = new String[] {
+                "vendor.gsm.serial",
+                "ro.vendor.gsm.serial",
+                "ro.serialno",
+                "ro.boot.serialno",
+                "persist.sys.product.serialno",
+                "persist.sys.device.serial"
+        };
+        for (String key : keys) {
+            Candidate value = cleanCandidate(systemProperty(key));
             if (value != null) return value;
-        } catch (Throwable ignored) { }
+            value = cleanCandidate(shellGetprop(key));
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private static Candidate readUrovoImei() {
+        String[] methods = new String[] {
+                "getImei1",
+                "getIMEI1",
+                "getImei",
+                "getIMEI",
+                "getDeviceId"
+        };
+        for (String method : methods) {
+            Candidate value = cleanCandidate(invokeUrovoMethod(method));
+            if (value != null && looksLikeImei(value.normalized)) return value;
+        }
+        return null;
+    }
+
+    private static Candidate readUrovoSerial() {
+        String[] methods = new String[] {
+                "getTIDSN",
+                "getSerialNumber",
+                "getSN",
+                "getDeviceId"
+        };
+        for (String method : methods) {
+            Candidate value = cleanCandidate(invokeUrovoMethod(method));
+            if (value != null && !looksLikeImei(value.normalized)) return value;
+        }
 
         String[] keys = new String[] {
                 "persist.sys.product.serialno",
                 "persist.sys.device.serial",
                 "ro.serialno",
-                "ro.boot.serialno"
+                "ro.boot.serialno",
+                "ro.vendor.serialno"
         };
         for (String key : keys) {
-            value = cleanSerial(systemProperty(key));
+            Candidate value = cleanCandidate(systemProperty(key));
             if (value != null) return value;
-
-            value = cleanSerial(shellGetprop(key));
+            value = cleanCandidate(shellGetprop(key));
             if (value != null) return value;
         }
-
         return null;
     }
 
-    private static String readGenericSerial() {
-        String value = cleanSerial(rawBuildGetSerial());
+    private static Candidate readGenericSerial() {
+        Candidate value = cleanCandidate(rawBuildGetSerial());
         if (value != null) return value;
 
         try {
-            value = cleanSerial(Build.SERIAL);
+            value = cleanCandidate(Build.SERIAL);
             if (value != null) return value;
         } catch (Throwable ignored) { }
 
@@ -120,21 +206,74 @@ public final class DeviceIdentifier {
                 "ro.boot.serialno",
                 "persist.sys.serialno",
                 "persist.vendor.serialno",
+                "persist.sys.product.serialno",
+                "persist.sys.device.serial",
                 "sys.serialnumber",
                 "ro.vendor.serialno",
                 "ro.vendor.product.serial",
-                "vendor.serialno"
+                "vendor.serialno",
+                "vendor.gsm.serial",
+                "ro.vendor.gsm.serial"
         };
 
         for (String key : keys) {
-            value = cleanSerial(systemProperty(key));
+            value = cleanCandidate(systemProperty(key));
             if (value != null) return value;
-
-            value = cleanSerial(shellGetprop(key));
+            value = cleanCandidate(shellGetprop(key));
             if (value != null) return value;
         }
-
         return null;
+    }
+
+    private static Candidate cleanCandidate(String raw) {
+        if (raw == null) return null;
+        String value = raw.trim();
+        if (value.length() < 4 || value.length() > 96) return null;
+
+        String lower = value.toLowerCase(Locale.US);
+        if ("unknown".equals(lower)
+                || "null".equals(lower)
+                || "none".equals(lower)
+                || "n/a".equals(lower)
+                || "na".equals(lower)
+                || "not available".equals(lower)) {
+            return null;
+        }
+
+        String normalized = normalizeIdentifier(value);
+        if (normalized.length() < 4 || normalized.length() > 96) return null;
+        if ("0123456789".equals(normalized)) return null;
+        if (normalized.matches("0+")
+                || normalized.matches("F+")
+                || normalized.matches("X+")) {
+            return null;
+        }
+
+        int alphaNumeric = 0;
+        for (int i = 0; i < value.length(); i++) {
+            if (Character.isLetterOrDigit(value.charAt(i))) alphaNumeric++;
+        }
+        if (alphaNumeric < 4) return null;
+
+        // Keep the vendor value for display/barcode. Only reject control characters.
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch)) return null;
+        }
+        return new Candidate(value, normalized);
+    }
+
+    public static String normalizeIdentifier(String raw) {
+        if (raw == null) return "";
+        String value = Normalizer.normalize(raw.trim(), Normalizer.Form.NFKC)
+                .toUpperCase(Locale.US);
+        return value.replaceAll("[^A-Z0-9]", "");
+    }
+
+    private static boolean looksLikeImei(String normalized) {
+        return normalized != null
+                && normalized.matches("[0-9]{14,17}")
+                && !normalized.matches("0+");
     }
 
     private static String rawBuildGetSerial() {
@@ -143,6 +282,18 @@ public final class DeviceIdentifier {
             return Build.getSerial();
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    private static String readAndroidId(Context context) {
+        try {
+            String value = Settings.Secure.getString(
+                    context.getContentResolver(),
+                    Settings.Secure.ANDROID_ID);
+            Candidate candidate = cleanCandidate(value);
+            return candidate == null ? "" : candidate.raw;
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 
@@ -189,35 +340,6 @@ public final class DeviceIdentifier {
                 try { reader.close(); } catch (Exception ignored) { }
             }
         }
-    }
-
-    private static String extractMt90Serial(String raw) {
-        if (raw == null) return null;
-        Matcher matcher = MT90_SERIAL.matcher(raw.trim());
-        if (!matcher.find()) return null;
-        return matcher.group(1).toUpperCase(Locale.US);
-    }
-
-    private static String cleanSerial(String raw) {
-        if (raw == null) return null;
-        String value = raw.trim();
-        if (value.length() < 6 || value.length() > 40) return null;
-
-        String lower = value.toLowerCase(Locale.US);
-        if ("unknown".equals(lower)
-                || "null".equals(lower)
-                || "none".equals(lower)) {
-            return null;
-        }
-        if ("0123456789".equals(value)) return null;
-        if (value.matches("(?i)[0f]+")) return null;
-        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._-]{5,39}")) return null;
-        return value;
-    }
-
-    private static String firstNonEmpty(String first, String second) {
-        if (first != null && first.trim().length() > 0) return first;
-        return second;
     }
 
     private static String safe(String value) {
