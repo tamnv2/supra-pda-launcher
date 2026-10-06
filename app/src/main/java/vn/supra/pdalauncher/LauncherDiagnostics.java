@@ -529,6 +529,10 @@ final class LauncherDiagnostics {
                 if (sentMarker(file).exists()) continue;
                 String date = dateFromFile(file);
                 if (date.isEmpty()) continue;
+                if (file.getName().contains("-late")
+                        && date.equals(vietnamDateKey())) {
+                    continue;
+                }
                 if (!isUploadDue(deviceKey, date)) continue;
                 if (!retryDue(file)) continue;
 
