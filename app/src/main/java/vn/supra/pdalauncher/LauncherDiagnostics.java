@@ -29,6 +29,7 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -502,10 +503,13 @@ final class LauncherDiagnostics {
 
                 File parent = file.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
-                try (BufferedWriter writer = new BufferedWriter(new FileWriter(file, true))) {
+                try (FileOutputStream stream = new FileOutputStream(file, true);
+                     BufferedWriter writer = new BufferedWriter(
+                             new OutputStreamWriter(stream, StandardCharsets.UTF_8))) {
                     writer.write(line.toString());
                     writer.newLine();
                     writer.flush();
+                    if (critical) stream.getFD().sync();
                 }
             } catch (Throwable ignored) { }
         }
