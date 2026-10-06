@@ -94,7 +94,7 @@ public final class DeviceIdentifier {
             // MEID is the primary S/N shown/barcoded by Launcher.
             // IMEI1 is inventory metadata only and must never become the primary identifier.
             meid = readUrovoMeid(context);
-            imei = readUrovoImei();
+            imei = readUrovoImei(context);
             if (meid != null) {
                 serial = meid;
             } else {
@@ -234,7 +234,7 @@ public final class DeviceIdentifier {
         return scanGetpropForMeid();
     }
 
-    private static Candidate readUrovoImei() {
+    private static Candidate readUrovoImei(Context context) {
         String[] methods = new String[] {
                 "getImei1",
                 "getIMEI1",
@@ -245,7 +245,27 @@ public final class DeviceIdentifier {
             Candidate value = cleanCandidate(invokeUrovoMethod(method));
             if (value != null && looksLikeImei(value.normalized)) return value;
         }
-        return null;
+
+        Candidate telephony = cleanCandidate(readTelephonyImei(context));
+        if (telephony != null && looksLikeImei(telephony.normalized)) return telephony;
+
+        String[] keys = new String[] {
+                "persist.radio.imei",
+                "persist.vendor.radio.imei",
+                "ril.gsm.imei",
+                "vendor.gsm.imei",
+                "ro.gsm.imei",
+                "ro.vendor.gsm.imei",
+                "ro.boot.imei"
+        };
+        for (String key : keys) {
+            Candidate value = cleanCandidate(systemProperty(key));
+            if (value != null && looksLikeImei(value.normalized)) return value;
+            value = cleanCandidate(shellGetprop(key));
+            if (value != null && looksLikeImei(value.normalized)) return value;
+        }
+
+        return scanGetpropForImei();
     }
 
     private static Candidate readUrovoSerial() {
@@ -373,8 +393,72 @@ public final class DeviceIdentifier {
 
     private static boolean looksLikeImei(String normalized) {
         return normalized != null
-                && normalized.matches("[0-9]{14,17}")
+                && normalized.matches("[0-9]{15,16}")
                 && !normalized.matches("0+");
+    }
+
+    private static String readTelephonyImei(Context context) {
+        try {
+            TelephonyManager manager =
+                    (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (manager == null) return null;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    String value = manager.getImei(0);
+                    if (value != null && value.trim().length() > 0) return value;
+                } catch (Throwable ignored) { }
+
+                try {
+                    String value = manager.getImei();
+                    if (value != null && value.trim().length() > 0) return value;
+                } catch (Throwable ignored) { }
+            }
+
+            try {
+                return manager.getDeviceId();
+            } catch (Throwable ignored) {
+                return null;
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Candidate scanGetpropForImei() {
+        BufferedReader reader = null;
+        try {
+            Process process = Runtime.getRuntime().exec(new String[] { "/system/bin/getprop" });
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String lower = line.toLowerCase(Locale.US);
+                if (!lower.contains("imei")) continue;
+
+                int open = line.lastIndexOf('[');
+                int close = line.lastIndexOf(']');
+                String rawValue = (open >= 0 && close > open)
+                        ? line.substring(open + 1, close)
+                        : line;
+                Candidate value = cleanCandidate(rawValue);
+                if (value != null && looksLikeImei(value.normalized)) {
+                    try { process.destroy(); } catch (Throwable ignored) { }
+                    return value;
+                }
+            }
+            try {
+                process.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } catch (Throwable ignored) {
+            return null;
+        } finally {
+            if (reader != null) {
+                try { reader.close(); } catch (Exception ignored) { }
+            }
+        }
+        return null;
     }
 
     private static String readTelephonyMeid(Context context) {
