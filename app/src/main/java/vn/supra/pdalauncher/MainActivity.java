@@ -96,6 +96,7 @@ public class MainActivity extends Activity {
         PasswordStore.ensureInitialized(this);
         buildUi();
         updateDeviceIdentityUi();
+        DeviceRegistryClient.syncIfNeeded(this);
         applyImmersive();
     }
 
