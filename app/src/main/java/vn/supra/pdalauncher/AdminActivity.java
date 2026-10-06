@@ -185,9 +185,9 @@ public class AdminActivity extends Activity {
 
         root.addView(section("Bảo mật"));
         root.addView(actionRow(android.R.drawable.ic_lock_lock,
-                "Đổi mật khẩu quản trị",
+                "Gửi lại mã quản trị hôm nay",
                 new View.OnClickListener() {
-                    @Override public void onClick(View v) { showChangePassword(); }
+                    @Override public void onClick(View v) { showResetDailyPassword(); }
                 }));
 
         root.addView(section("Cập nhật"));
@@ -605,45 +605,50 @@ public class AdminActivity extends Activity {
         }
     }
 
-    private void showChangePassword() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), 0, dp(18), 0);
-        final EditText p1 = passwordInput("Mật khẩu mới (tối thiểu 8 chữ số)");
-        final EditText p2 = passwordInput("Nhập lại mật khẩu mới");
-        box.addView(p1); box.addView(p2);
-
-        final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Đổi mật khẩu quản trị")
-                .setView(box)
+    private void showResetDailyPassword() {
+        new AlertDialog.Builder(this)
+                .setTitle("Gửi lại mã quản trị")
+                .setMessage("Hệ thống sẽ tạo mã 4 số mới cho hôm nay và gửi tới tam95.supra@gmail.com. Sau mỗi lần gửi, toàn bộ PDA bị khóa gửi lại trong 15 phút.")
                 .setNegativeButton("Hủy", null)
-                .setPositiveButton("Lưu", null)
-                .create();
-        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
-            @Override public void onShow(DialogInterface d) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
-                    @Override public void onClick(View v) {
-                        String a = p1.getText().toString();
-                        String b = p2.getText().toString();
-                        if (!a.matches("\\d{8,}")) { p1.setError("Chỉ nhập số, tối thiểu 8 chữ số"); return; }
-                        if (!a.equals(b)) { p2.setError("Hai mật khẩu không giống nhau"); return; }
-                        if (PasswordStore.setPassword(AdminActivity.this, a)) {
-                            Toast.makeText(AdminActivity.this, "Đã đổi mật khẩu.", Toast.LENGTH_SHORT).show();
-                            dialog.dismiss();
-                        } else p1.setError("Không thể lưu mật khẩu");
+                .setPositiveButton("Gửi mã", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        LauncherPasswordClient.reset(
+                                AdminActivity.this,
+                                new LauncherPasswordClient.Callback() {
+                                    @Override public void onResult(LauncherPasswordClient.Result result) {
+                                        LauncherDiagnostics.recordOperationalEvent(
+                                                AdminActivity.this,
+                                                "admin_code_reset_from_settings",
+                                                result.requestOk ? "sent" : (result.error.isEmpty() ? "failed" : result.error));
+                                        if (result.requestOk) {
+                                            Toast.makeText(
+                                                    AdminActivity.this,
+                                                    "Đã gửi mã mới tới tam95.supra@gmail.com.",
+                                                    Toast.LENGTH_LONG).show();
+                                        } else if ("reset_cooldown".equalsIgnoreCase(result.error)
+                                                || result.resetCooldownSeconds > 0) {
+                                            int minutes = Math.max(1,
+                                                    (result.resetCooldownSeconds + 59) / 60);
+                                            Toast.makeText(
+                                                    AdminActivity.this,
+                                                    "Chưa thể gửi lại. Còn khoảng " + minutes + " phút.",
+                                                    Toast.LENGTH_LONG).show();
+                                        } else if ("MAIL_SEND_FAILED".equalsIgnoreCase(result.error)) {
+                                            Toast.makeText(
+                                                    AdminActivity.this,
+                                                    "Email chưa gửi thành công. Hệ thống sẽ tự thử lại.",
+                                                    Toast.LENGTH_LONG).show();
+                                        } else {
+                                            Toast.makeText(
+                                                    AdminActivity.this,
+                                                    "Không gửi lại được mã. Kiểm tra mạng rồi thử lại.",
+                                                    Toast.LENGTH_LONG).show();
+                                        }
+                                    }
+                                });
                     }
-                });
-            }
-        });
-        dialog.show();
-    }
-
-    private EditText passwordInput(String hint) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setSingleLine(true);
-        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        return e;
+                })
+                .show();
     }
 
     private List<ResolveInfo> queryLauncherApps() {

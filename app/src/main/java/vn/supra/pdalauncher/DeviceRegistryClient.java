@@ -37,6 +37,15 @@ final class DeviceRegistryClient {
 
     private DeviceRegistryClient() {}
 
+    static String currentDeviceKey(Context context) {
+        try {
+            Snapshot snapshot = Snapshot.capture(context.getApplicationContext());
+            return snapshot == null ? "" : snapshot.deviceKey;
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
     static void retryPending(final Context context) {
         final Context app = context.getApplicationContext();
         if (Prefs.isRegistryRegistered(app)) return;
