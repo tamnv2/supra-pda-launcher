@@ -90,11 +90,11 @@ final class LauncherPasswordClient {
 
             HttpURLConnection connection = null;
             try {
+                JSONObject requestBody = suppliedBody == null ? new JSONObject() : suppliedBody;
                 String endpoint = API_BASE + path;
                 if ("GET".equals(method)) {
                     endpoint += "?device_key=" + deviceKey;
                 } else {
-                    JSONObject requestBody = suppliedBody == null ? new JSONObject() : suppliedBody;
                     requestBody.put("device_key", deviceKey);
                 }
 
@@ -109,7 +109,6 @@ final class LauncherPasswordClient {
                 if (!"GET".equals(method)) {
                     connection.setDoOutput(true);
                     connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                    JSONObject requestBody = suppliedBody == null ? new JSONObject() : suppliedBody;
                     byte[] bytes = requestBody.toString().getBytes(StandardCharsets.UTF_8);
                     connection.setFixedLengthStreamingMode(bytes.length);
                     try (OutputStream output = connection.getOutputStream()) {
