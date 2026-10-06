@@ -1,0 +1,99 @@
+name: Launcher Channel Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Known-good Launcher version to publish to the update channel, for example 0.3.21
+        required: true
+        type: string
+      reason:
+        description: Optional reason, for example hold bad v0.3.22
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: launcher-channel-control
+  cancel-in-progress: false
+
+jobs:
+  publish-known-good:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Prepare known-good release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+          REASON_INPUT: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${VERSION_INPUT#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must match x.y.z"
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+
+          mkdir -p dist
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "SUPRA-PDA-Launcher-v${VERSION}.apk" \
+            --dir dist
+
+          SRC="dist/SUPRA-PDA-Launcher-v${VERSION}.apk"
+          test -f "$SRC" || { echo "Release APK not found for $TAG"; exit 1; }
+
+          CHANNEL_APK="dist/SUPRA-PDA-Launcher-latest.apk"
+          CHANNEL_SHA="${CHANNEL_APK}.sha256"
+          CHANNEL_JSON="dist/launcher-latest.json"
+
+          cp "$SRC" "$CHANNEL_APK"
+          SHA256="$(sha256sum "$CHANNEL_APK" | awk '{print $1}')"
+          SIZE_BYTES="$(stat -c%s "$CHANNEL_APK")"
+          printf '%s  %s\n' "$SHA256" "$(basename "$CHANNEL_APK")" > "$CHANNEL_SHA"
+
+          PUBLISHED_AT="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq '.publishedAt')"
+          SOURCE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish')"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --argjson version_code "$VERSION_CODE" \
+            --arg tag "$TAG" \
+            --arg published_at "$PUBLISHED_AT" \
+            --arg promoted_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg source "$SOURCE" \
+            --arg reason "$REASON_INPUT" \
+            --argjson size_bytes "$SIZE_BYTES" \
+            --arg sha256 "$SHA256" \
+            '{
+              version: $version,
+              version_code: $version_code,
+              tag: $tag,
+              published_at: $published_at,
+              promoted_at: $promoted_at,
+              source: $source,
+              size_bytes: $size_bytes,
+              sha256: $sha256,
+              channel_action: "manual-known-good",
+              reason: $reason
+            }' > "$CHANNEL_JSON"
+
+          CHANNEL_TAG="launcher-channel"
+          gh release upload "$CHANNEL_TAG" \
+            "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          gh release edit "$CHANNEL_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease
