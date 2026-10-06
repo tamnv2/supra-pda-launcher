@@ -117,8 +117,7 @@ final class LauncherDiagnostics {
     }
 
     static void runPeriodicMaintenance(Context context) {
-        final Context app = context.getApplicationContext();
-        IO.execute(() -> maintenanceSync(app, true));
+        maintenanceSync(context.getApplicationContext(), true);
     }
 
     static void onBatteryChanged(Context context, Intent batteryIntent) {
