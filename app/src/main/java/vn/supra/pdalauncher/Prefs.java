@@ -15,6 +15,10 @@ final class Prefs {
     private static final String KEY_TIME_FIX_UNTIL = "time_fix_until";
     private static final String KEY_UPDATE_UNTIL = "update_until";
     private static final String KEY_UPDATE_LAST_CHECK_AT = "update_last_check_at";
+    private static final String KEY_UPDATE_REQUIRED_VERSION = "update_required_version";
+    private static final String KEY_UPDATE_REQUIRED_CODE = "update_required_code";
+    private static final String KEY_UPDATE_REQUIRED_URL = "update_required_url";
+    private static final String KEY_UPDATE_REQUIRED_SHA256 = "update_required_sha256";
     private static final String KEY_UNINSTALL_UNTIL = "uninstall_until";
     private static final String KEY_UNINSTALL_PACKAGE = "uninstall_package";
     private static final String KEY_GUARD_PAUSE_UNTIL_WALL = "guard_pause_until_wall";
@@ -117,6 +121,53 @@ final class Prefs {
     static void markUpdateCheck(Context c, long at) {
         c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_UPDATE_LAST_CHECK_AT, at)
+                .apply();
+    }
+
+    static void markRequiredUpdate(
+            Context c,
+            String version,
+            int versionCode,
+            String apkUrl,
+            String sha256) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_UPDATE_REQUIRED_VERSION, version == null ? "" : version)
+                .putInt(KEY_UPDATE_REQUIRED_CODE, Math.max(0, versionCode))
+                .putString(KEY_UPDATE_REQUIRED_URL, apkUrl == null ? "" : apkUrl)
+                .putString(KEY_UPDATE_REQUIRED_SHA256, sha256 == null ? "" : sha256)
+                .apply();
+    }
+
+    static boolean isRequiredUpdate(Context c, int currentVersionCode) {
+        return getRequiredUpdateCode(c) > currentVersionCode;
+    }
+
+    static String getRequiredUpdateVersion(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_UPDATE_REQUIRED_VERSION, "");
+    }
+
+    static int getRequiredUpdateCode(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getInt(KEY_UPDATE_REQUIRED_CODE, 0);
+    }
+
+    static String getRequiredUpdateUrl(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_UPDATE_REQUIRED_URL, "");
+    }
+
+    static String getRequiredUpdateSha256(Context c) {
+        return c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+                .getString(KEY_UPDATE_REQUIRED_SHA256, "");
+    }
+
+    static void clearRequiredUpdate(Context c) {
+        c.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+                .remove(KEY_UPDATE_REQUIRED_VERSION)
+                .remove(KEY_UPDATE_REQUIRED_CODE)
+                .remove(KEY_UPDATE_REQUIRED_URL)
+                .remove(KEY_UPDATE_REQUIRED_SHA256)
                 .apply();
     }
 
