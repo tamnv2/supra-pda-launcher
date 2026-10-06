@@ -81,7 +81,9 @@ final class DeviceRegistryClient {
                 if (lastValidated <= 0L || now - lastValidated >= VALIDATION_INTERVAL_MS) {
                     validateOrRepair(app, snapshot, now);
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable error) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        app, "registry_sync_exception", error.getClass().getSimpleName());
                 // Registry sync is best-effort and must never affect launcher availability.
             } finally {
                 IN_FLIGHT.set(false);
@@ -102,13 +104,21 @@ final class DeviceRegistryClient {
             connection.setRequestProperty("User-Agent", userAgent());
 
             int code = connection.getResponseCode();
-            if (code != 200) return;
+            if (code != 200) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        context, "registry_validate_http", String.valueOf(code));
+                return;
+            }
             JSONObject response = new JSONObject(readResponse(connection));
             if (response.optBoolean("registered", false)) {
                 Prefs.markRegistryValidated(context, now);
+                LauncherDiagnostics.recordOperationalEvent(
+                        context, "registry_validated", "registered");
                 return;
             }
             Prefs.markRegistryMissing(context);
+            LauncherDiagnostics.recordOperationalEvent(
+                    context, "registry_missing", "repair_required");
         } catch (Throwable ignored) {
             return;
         } finally {
@@ -140,12 +150,16 @@ final class DeviceRegistryClient {
 
             int code = connection.getResponseCode();
             if (code != 200) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        context, "registry_register_http", String.valueOf(code));
                 if (isRetryableHttp(code)) schedulePendingRetry(context, System.currentTimeMillis());
                 return;
             }
 
             JSONObject response = new JSONObject(readResponse(connection));
             if (!response.optBoolean("registered", false)) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        context, "registry_register_rejected", "registered_false");
                 schedulePendingRetry(context, System.currentTimeMillis());
                 return;
             }
@@ -153,6 +167,8 @@ final class DeviceRegistryClient {
             // Durable Object registration is not enough. Only mark success after
             // Google Sheet persistence is acknowledged by the service.
             if (!response.optBoolean("sheet_synced", false)) {
+                LauncherDiagnostics.recordOperationalEvent(
+                        context, "registry_sheet_pending", "server_reconcile");
                 schedulePendingRetry(context, System.currentTimeMillis());
                 return;
             }
@@ -163,7 +179,11 @@ final class DeviceRegistryClient {
                     snapshot.payloadHash,
                     response.optInt("registry_schema_version", SCHEMA_VERSION),
                     System.currentTimeMillis());
-        } catch (Throwable ignored) {
+            LauncherDiagnostics.recordOperationalEvent(
+                    context, "registry_synced", "sheet_synced");
+        } catch (Throwable error) {
+            LauncherDiagnostics.recordOperationalEvent(
+                    context, "registry_register_exception", error.getClass().getSimpleName());
             schedulePendingRetry(context, System.currentTimeMillis());
         } finally {
             if (connection != null) connection.disconnect();

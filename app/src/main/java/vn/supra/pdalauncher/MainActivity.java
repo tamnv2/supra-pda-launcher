@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
         @Override public void run() {
             updateClock();
             updateGuardPauseUi();
+            LauncherDiagnostics.tick(MainActivity.this);
             long now = System.currentTimeMillis();
             long delay = 60000L - (now % 60000L);
             handler.postDelayed(this, delay);
@@ -88,12 +89,14 @@ public class MainActivity extends Activity {
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
             int percent = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : -1;
             updateBatteryUi(percent, isCharging(intent));
+            LauncherDiagnostics.onBatteryChanged(MainActivity.this, intent);
         }
     };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         PasswordStore.ensureInitialized(this);
+        LauncherDiagnostics.initialize(this);
         buildUi();
         updateDeviceIdentityUi();
         DeviceRegistryClient.syncIfNeeded(this);
@@ -508,6 +511,7 @@ public class MainActivity extends Activity {
                     Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
                     if (launch == null) throw new IllegalStateException("No launch intent");
                     launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    LauncherDiagnostics.recordAppLaunch(MainActivity.this, pkg);
                     startActivity(launch);
                 } catch (Exception e) {
                     Toast.makeText(MainActivity.this,
@@ -553,10 +557,14 @@ public class MainActivity extends Activity {
                         String value = input.getText().toString();
                         if (PasswordStore.verify(MainActivity.this, value)
                                 || TimeCodeVerifier.verify(value)) {
+                            LauncherDiagnostics.recordSecurityEvent(
+                                    MainActivity.this, "admin_login", true);
                             Prefs.beginAdminSession(MainActivity.this);
                             dialog.dismiss();
                             startActivity(new Intent(MainActivity.this, AdminActivity.class));
                         } else {
+                            LauncherDiagnostics.recordSecurityEvent(
+                                    MainActivity.this, "admin_login", false);
                             input.setError("Mật khẩu không đúng");
                         }
                     }
@@ -599,6 +607,8 @@ public class MainActivity extends Activity {
                         String value = input.getText().toString();
                         if (PasswordStore.verify(MainActivity.this, value)
                                 || TimeCodeVerifier.verify(value)) {
+                            LauncherDiagnostics.recordSecurityEvent(
+                                    MainActivity.this, "guard_pause", true);
                             Prefs.beginGuardPause(MainActivity.this);
                             dialog.dismiss();
                             updateGuardPauseUi();
@@ -606,6 +616,8 @@ public class MainActivity extends Activity {
                                     "Đã tạm hoãn chống lách trong 5 phút.",
                                     Toast.LENGTH_LONG).show();
                         } else {
+                            LauncherDiagnostics.recordSecurityEvent(
+                                    MainActivity.this, "guard_pause", false);
                             input.setError("Mật khẩu không đúng");
                         }
                     }

@@ -76,6 +76,10 @@ final class UpdateManager {
         if (showUpToDate) {
             Toast.makeText(activity, "Đang kiểm tra cập nhật…", Toast.LENGTH_SHORT).show();
         }
+        LauncherDiagnostics.recordUpdateEvent(
+                activity,
+                showUpToDate ? "manual_check_started" : "auto_check_started",
+                BuildConfig.VERSION_NAME);
         Prefs.markUpdateCheck(activity, System.currentTimeMillis());
 
         new Thread(() -> {
@@ -127,6 +131,8 @@ final class UpdateManager {
                             latestVersionCode,
                             urlToDownload,
                             expectedSha256);
+                    LauncherDiagnostics.recordUpdateEvent(
+                            activity, "update_required", versionToShow);
 
                     activity.runOnUiThread(() ->
                             showRequiredUpdateDialog(
@@ -138,6 +144,8 @@ final class UpdateManager {
                     // This also releases the gate if the server/channel was rolled
                     // back to a known-good version after a bad release.
                     Prefs.clearRequiredUpdate(activity);
+                    LauncherDiagnostics.recordUpdateEvent(
+                            activity, "update_channel_current", latestVersion);
                     activity.runOnUiThread(() -> {
                         dismissRequiredDialog();
                         if (showUpToDate) {
@@ -149,6 +157,8 @@ final class UpdateManager {
                     });
                 }
             } catch (Exception e) {
+                LauncherDiagnostics.recordUpdateEvent(
+                        activity, "update_check_failed", e.getClass().getSimpleName());
                 if (showUpToDate) {
                     activity.runOnUiThread(() -> Toast.makeText(
                             activity,
@@ -241,6 +251,8 @@ final class UpdateManager {
             final String version,
             final String apkUrl,
             final String expectedSha256) {
+        LauncherDiagnostics.recordUpdateEvent(
+                activity, "update_download_requested", version);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !activity.getPackageManager().canRequestPackageInstalls()) {
             try {
@@ -249,6 +261,8 @@ final class UpdateManager {
                         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:" + activity.getPackageName()));
                 activity.startActivity(permission);
+                LauncherDiagnostics.recordUpdateEvent(
+                        activity, "update_install_permission_required", version);
                 Toast.makeText(
                         activity,
                         "Hãy cho phép SUPRA PDA cài ứng dụng rồi quay lại bấm Cập nhật.",
@@ -311,9 +325,13 @@ final class UpdateManager {
                 }
 
                 DOWNLOAD_IN_FLIGHT.set(false);
+                LauncherDiagnostics.recordUpdateEvent(
+                        activity, "update_download_verified", version);
                 activity.runOnUiThread(() -> launchInstaller(activity, apk));
             } catch (Exception e) {
                 DOWNLOAD_IN_FLIGHT.set(false);
+                LauncherDiagnostics.recordUpdateEvent(
+                        activity, "update_download_failed", e.getClass().getSimpleName());
                 activity.runOnUiThread(() -> Toast.makeText(
                         activity,
                         "Tải cập nhật thất bại: " + e.getMessage(),
@@ -352,6 +370,8 @@ final class UpdateManager {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                             | Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(install);
+            LauncherDiagnostics.recordUpdateEvent(
+                    activity, "update_installer_opened", apk.getName());
         } catch (Exception e) {
             Toast.makeText(
                     activity,
