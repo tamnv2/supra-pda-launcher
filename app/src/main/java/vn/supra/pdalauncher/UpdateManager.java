@@ -11,58 +11,80 @@ import android.widget.Toast;
 
 import androidx.core.content.FileProvider;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
 import java.util.Locale;
 
 final class UpdateManager {
-    private static final String RELEASE_API =
-            "https://api.github.com/repos/tamnv2/supra-pda-launcher/releases/latest";
+    private static final String SERVICE_BASE = "https://inventory-beta.supra.cc.cd";
+    private static final String MANIFEST_URL = SERVICE_BASE + "/downloads/launcher/manifest";
+    private static final long AUTO_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L;
 
     private UpdateManager() {}
 
+    static void checkOnLaunch(final Activity activity) {
+        long now = System.currentTimeMillis();
+        long lastCheck = Prefs.getLastUpdateCheckAt(activity);
+        if (lastCheck > 0L && now - lastCheck < AUTO_CHECK_INTERVAL_MS) return;
+        checkInternal(activity, false);
+    }
+
     static void check(final Activity activity, final boolean showUpToDate) {
-        Toast.makeText(activity, "Đang kiểm tra cập nhật…", Toast.LENGTH_SHORT).show();
+        checkInternal(activity, showUpToDate);
+    }
+
+    private static void checkInternal(final Activity activity, final boolean showUpToDate) {
+        if (showUpToDate) {
+            Toast.makeText(activity, "Đang kiểm tra cập nhật…", Toast.LENGTH_SHORT).show();
+        }
+        Prefs.markUpdateCheck(activity, System.currentTimeMillis());
+
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(RELEASE_API).openConnection();
+                connection = (HttpURLConnection) new URL(MANIFEST_URL).openConnection();
                 connection.setConnectTimeout(8000);
                 connection.setReadTimeout(10000);
-                connection.setRequestProperty("Accept", "application/vnd.github+json");
+                connection.setRequestProperty("Accept", "application/json");
                 connection.setRequestProperty("User-Agent", "SUPRA-PDA-Launcher/" + BuildConfig.VERSION_NAME);
 
                 int code = connection.getResponseCode();
-                if (code != 200) throw new IllegalStateException("GitHub HTTP " + code);
+                if (code != 200) throw new IllegalStateException("Dịch vụ cập nhật HTTP " + code);
 
                 BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-                StringBuilder json = new StringBuilder();
+                StringBuilder raw = new StringBuilder();
                 String line;
-                while ((line = reader.readLine()) != null) json.append(line);
+                while ((line = reader.readLine()) != null && raw.length() < 32768) raw.append(line);
                 reader.close();
 
-                JSONObject release = new JSONObject(json.toString());
-                String tag = release.optString("tag_name", "");
-                String latestVersion = normalizeVersion(tag);
-                String currentVersion = normalizeVersion(BuildConfig.VERSION_NAME);
-                String apkUrl = findApkUrl(release.optJSONArray("assets"));
+                JSONObject manifest = new JSONObject(raw.toString());
+                String latestVersion = normalizeVersion(manifest.optString("version", ""));
+                int latestVersionCode = manifest.optInt("version_code", 0);
+                String sha256 = manifest.optString("sha256", "").trim().toLowerCase(Locale.US);
+                String apkPath = manifest.optString("apk_path", "").trim();
 
-                if (latestVersion.length() == 0 || apkUrl == null) {
-                    throw new IllegalStateException("Release chưa có APK hợp lệ");
+                if (latestVersion.length() == 0
+                        || latestVersionCode <= 0
+                        || !sha256.matches("[0-9a-f]{64}")
+                        || !apkPath.startsWith("/downloads/launcher/")) {
+                    throw new IllegalStateException("Manifest cập nhật không hợp lệ");
                 }
 
-                if (compareVersions(latestVersion, currentVersion) > 0) {
+                if (latestVersionCode > BuildConfig.VERSION_CODE) {
                     final String versionToShow = latestVersion;
-                    final String urlToDownload = apkUrl;
-                    activity.runOnUiThread(() -> showUpdateDialog(activity, versionToShow, urlToDownload));
+                    final String urlToDownload = SERVICE_BASE + apkPath;
+                    final String expectedSha256 = sha256;
+                    activity.runOnUiThread(() ->
+                            showUpdateDialog(activity, versionToShow, urlToDownload, expectedSha256));
                 } else if (showUpToDate) {
                     activity.runOnUiThread(() -> Toast.makeText(activity,
                             "Đang dùng phiên bản mới nhất: " + BuildConfig.VERSION_NAME,
@@ -80,16 +102,25 @@ final class UpdateManager {
         }, "supra-update-check").start();
     }
 
-    private static void showUpdateDialog(final Activity activity, String version, final String apkUrl) {
+    private static void showUpdateDialog(
+            final Activity activity,
+            String version,
+            final String apkUrl,
+            final String expectedSha256) {
         new AlertDialog.Builder(activity)
                 .setTitle("Có bản cập nhật " + version)
                 .setMessage("Tải và cài phiên bản mới của SUPRA PDA Launcher?")
                 .setNegativeButton("Để sau", null)
-                .setPositiveButton("Cập nhật", (dialog, which) -> startDownload(activity, version, apkUrl))
+                .setPositiveButton("Cập nhật",
+                        (dialog, which) -> startDownload(activity, version, apkUrl, expectedSha256))
                 .show();
     }
 
-    private static void startDownload(final Activity activity, final String version, final String apkUrl) {
+    private static void startDownload(
+            final Activity activity,
+            final String version,
+            final String apkUrl,
+            final String expectedSha256) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !activity.getPackageManager().canRequestPackageInstalls()) {
             try {
@@ -116,8 +147,9 @@ final class UpdateManager {
 
                 File apk = new File(dir, "SUPRA-PDA-Launcher-" + version + ".apk");
                 connection = (HttpURLConnection) new URL(apkUrl).openConnection();
+                connection.setInstanceFollowRedirects(true);
                 connection.setConnectTimeout(10000);
-                connection.setReadTimeout(30000);
+                connection.setReadTimeout(45000);
                 connection.setRequestProperty("User-Agent", "SUPRA-PDA-Launcher/" + BuildConfig.VERSION_NAME);
                 connection.connect();
                 if (connection.getResponseCode() != 200) {
@@ -132,6 +164,13 @@ final class UpdateManager {
                     output.flush();
                 }
 
+                String actualSha256 = sha256(apk);
+                if (!expectedSha256.equalsIgnoreCase(actualSha256)) {
+                    //noinspection ResultOfMethodCallIgnored
+                    apk.delete();
+                    throw new IllegalStateException("SHA-256 không khớp, đã hủy file cập nhật");
+                }
+
                 activity.runOnUiThread(() -> launchInstaller(activity, apk));
             } catch (Exception e) {
                 activity.runOnUiThread(() -> Toast.makeText(activity,
@@ -141,6 +180,19 @@ final class UpdateManager {
                 if (connection != null) connection.disconnect();
             }
         }, "supra-update-download").start();
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (FileInputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+        }
+        byte[] bytes = digest.digest();
+        StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (byte item : bytes) hex.append(String.format(Locale.US, "%02x", item & 0xff));
+        return hex.toString();
     }
 
     private static void launchInstaller(Activity activity, File apk) {
@@ -158,43 +210,12 @@ final class UpdateManager {
         }
     }
 
-    private static String findApkUrl(JSONArray assets) {
-        if (assets == null) return null;
-        for (int i = 0; i < assets.length(); i++) {
-            JSONObject asset = assets.optJSONObject(i);
-            if (asset == null) continue;
-            String name = asset.optString("name", "").toLowerCase(Locale.US);
-            if (name.endsWith(".apk")) {
-                String url = asset.optString("browser_download_url", "");
-                if (url.length() > 0) return url;
-            }
-        }
-        return null;
-    }
-
     private static String normalizeVersion(String version) {
         if (version == null) return "";
         String v = version.trim();
         if (v.startsWith("v") || v.startsWith("V")) v = v.substring(1);
         int dash = v.indexOf('-');
         if (dash >= 0) v = v.substring(0, dash);
-        return v;
-    }
-
-    private static int compareVersions(String a, String b) {
-        String[] aa = a.split("\\.");
-        String[] bb = b.split("\\.");
-        int length = Math.max(aa.length, bb.length);
-        for (int i = 0; i < length; i++) {
-            int av = i < aa.length ? parsePart(aa[i]) : 0;
-            int bv = i < bb.length ? parsePart(bb[i]) : 0;
-            if (av != bv) return av > bv ? 1 : -1;
-        }
-        return 0;
-    }
-
-    private static int parsePart(String s) {
-        try { return Integer.parseInt(s.replaceAll("[^0-9]", "")); }
-        catch (Exception e) { return 0; }
+        return v.matches("\\d+\\.\\d+\\.\\d+") ? v : "";
     }
 }
