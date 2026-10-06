@@ -3,6 +3,7 @@ package vn.supra.pdalauncher;
 import android.content.Context;
 import android.os.Build;
 import android.provider.Settings;
+import android.telephony.TelephonyManager;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -67,6 +68,10 @@ public final class DeviceIdentifier {
             Pattern.compile("(?i)(MT90[A-Z0-9._-]{6,39})");
     private static final Pattern GENERIC_SERIAL_TOKEN =
             Pattern.compile("([A-Za-z0-9][A-Za-z0-9._-]{5,39})");
+    private static final Pattern MEID_DECIMAL =
+            Pattern.compile("(?<![0-9])(\\d{18})(?![0-9])");
+    private static final Pattern MEID_HEX =
+            Pattern.compile("(?i)(?<![0-9A-F])([0-9A-F]{14})(?![0-9A-F])");
 
     private DeviceIdentifier() { }
 
@@ -78,14 +83,24 @@ public final class DeviceIdentifier {
 
         Candidate serial = null;
         Candidate imei = null;
+        Candidate meid = null;
+        boolean isUrovo = fingerprint.contains("urovo") || fingerprint.contains("dt50");
 
         if (fingerprint.contains("newland") || fingerprint.contains("mt90")) {
             serial = readNewlandSerial();
             if (serial == null) serial = readGenericSerial();
-        } else if (fingerprint.contains("urovo") || fingerprint.contains("dt50")) {
+        } else if (isUrovo) {
+            // Operational identity rule for DT50:
+            // MEID is the primary S/N shown/barcoded by Launcher.
+            // IMEI1 is inventory metadata only and must never become the primary identifier.
+            meid = readUrovoMeid(context);
             imei = readUrovoImei();
-            serial = readUrovoSerial();
-            if (serial == null) serial = readGenericSerial();
+            if (meid != null) {
+                serial = meid;
+            } else {
+                serial = readUrovoSerial();
+                if (serial == null) serial = readGenericSerial();
+            }
         } else {
             serial = readGenericSerial();
         }
@@ -94,10 +109,10 @@ public final class DeviceIdentifier {
         String source;
         String label;
 
-        if (imei != null) {
-            primary = imei;
-            source = "IMEI1";
-            label = "IMEI1";
+        if (isUrovo && meid != null) {
+            primary = meid;
+            source = "MEID";
+            label = "S/N";
         } else if (serial != null) {
             primary = serial;
             source = "SERIAL";
@@ -180,13 +195,51 @@ public final class DeviceIdentifier {
         return cleanCandidate(value);
     }
 
+    private static Candidate readUrovoMeid(Context context) {
+        // Some Urovo firmware exposes MEID through vendor-only methods even when
+        // standard Android persistent-ID APIs are restricted.
+        String[] methods = new String[] {
+                "getMeid",
+                "getMEID",
+                "getMeid1",
+                "getMEID1",
+                "getDeviceMeid",
+                "getDeviceMEID"
+        };
+        for (String method : methods) {
+            Candidate value = cleanMeidCandidate(invokeUrovoMethod(method));
+            if (value != null) return value;
+        }
+
+        Candidate telephony = cleanMeidCandidate(readTelephonyMeid(context));
+        if (telephony != null) return telephony;
+
+        String[] keys = new String[] {
+                "ril.meid",
+                "gsm.meid",
+                "persist.radio.meid",
+                "persist.vendor.radio.meid",
+                "vendor.ril.meid",
+                "ro.ril.meid",
+                "ro.vendor.radio.meid",
+                "ro.boot.meid"
+        };
+        for (String key : keys) {
+            Candidate value = cleanMeidCandidate(systemProperty(key));
+            if (value != null) return value;
+            value = cleanMeidCandidate(shellGetprop(key));
+            if (value != null) return value;
+        }
+
+        return scanGetpropForMeid();
+    }
+
     private static Candidate readUrovoImei() {
         String[] methods = new String[] {
                 "getImei1",
                 "getIMEI1",
                 "getImei",
-                "getIMEI",
-                "getDeviceId"
+                "getIMEI"
         };
         for (String method : methods) {
             Candidate value = cleanCandidate(invokeUrovoMethod(method));
@@ -256,6 +309,23 @@ public final class DeviceIdentifier {
         return null;
     }
 
+    private static Candidate cleanMeidCandidate(String raw) {
+        if (raw == null) return null;
+        String value = raw.trim();
+        if (value.length() == 0) return null;
+
+        Matcher decimal = MEID_DECIMAL.matcher(value);
+        if (decimal.find()) {
+            return cleanCandidate(decimal.group(1));
+        }
+
+        Matcher hex = MEID_HEX.matcher(value);
+        if (hex.find()) {
+            return cleanCandidate(hex.group(1).toUpperCase(Locale.US));
+        }
+        return null;
+    }
+
     private static Candidate cleanCandidate(String raw) {
         if (raw == null) return null;
         String value = raw.trim();
@@ -305,6 +375,64 @@ public final class DeviceIdentifier {
         return normalized != null
                 && normalized.matches("[0-9]{14,17}")
                 && !normalized.matches("0+");
+    }
+
+    private static String readTelephonyMeid(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null;
+        try {
+            TelephonyManager manager =
+                    (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (manager == null) return null;
+
+            try {
+                String value = manager.getMeid(0);
+                if (value != null && value.trim().length() > 0) return value;
+            } catch (Throwable ignored) { }
+
+            try {
+                return manager.getMeid();
+            } catch (Throwable ignored) {
+                return null;
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Candidate scanGetpropForMeid() {
+        BufferedReader reader = null;
+        try {
+            Process process = Runtime.getRuntime().exec(new String[] { "/system/bin/getprop" });
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String lower = line.toLowerCase(Locale.US);
+                if (!lower.contains("meid")) continue;
+
+                int open = line.lastIndexOf('[');
+                int close = line.lastIndexOf(']');
+                String rawValue = (open >= 0 && close > open)
+                        ? line.substring(open + 1, close)
+                        : line;
+                Candidate value = cleanMeidCandidate(rawValue);
+                if (value != null) {
+                    try { process.destroy(); } catch (Throwable ignored) { }
+                    return value;
+                }
+            }
+            try {
+                process.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } catch (Throwable ignored) {
+            return null;
+        } finally {
+            if (reader != null) {
+                try { reader.close(); } catch (Exception ignored) { }
+            }
+        }
+        return null;
     }
 
     private static String rawBuildGetSerial() {
