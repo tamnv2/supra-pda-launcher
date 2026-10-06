@@ -1,0 +1,62 @@
+name: Launcher Update Channel Smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/launcher-update-channel-smoke.yml'
+  workflow_run:
+    workflows:
+      - 'Release APK'
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-update-channel-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Verify fixed update channel end-to-end
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < release/version.txt)"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+
+          BASE="https://inventory-beta.supra.cc.cd"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            "$BASE/downloads/launcher/manifest" -o manifest.json
+
+          jq -e \
+            --arg version "$VERSION" \
+            --argjson version_code "$VERSION_CODE" \
+            '.version == $version
+             and .version_code == $version_code
+             and .apk_path == "/downloads/launcher/latest"
+             and (.sha256 | test("^[0-9a-f]{64}$"))' manifest.json >/dev/null
+
+          EXPECTED_SHA="$(jq -r '.sha256' manifest.json)"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            "$BASE/downloads/launcher/latest" -o launcher.apk
+
+          ACTUAL_SHA="$(sha256sum launcher.apk | awk '{print $1}')"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          test "$(stat -c%s launcher.apk)" -gt 50000
+
+          echo "Launcher fixed update channel PASS: v$VERSION $ACTUAL_SHA"
