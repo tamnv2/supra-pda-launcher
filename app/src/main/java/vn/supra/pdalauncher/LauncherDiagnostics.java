@@ -111,7 +111,15 @@ final class LauncherDiagnostics {
     static void tick(Context context) {
         final Context app = context.getApplicationContext();
         long now = System.currentTimeMillis();
-        if (now - lastUploadCheckAt < MIN_UPLOAD_CHECK_INTERVAL_MS) return;
+        Calendar calendar = Calendar.getInstance(VN_TZ);
+        int minuteOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 60
+                + calendar.get(Calendar.MINUTE);
+        boolean nearClose = minuteOfDay >= 21 * 60 + 50
+                && minuteOfDay <= 22 * 60 + 10;
+        long interval = nearClose
+                ? MIN_UPLOAD_CHECK_INTERVAL_MS
+                : 5L * 60L * 1000L;
+        if (now - lastUploadCheckAt < interval) return;
         lastUploadCheckAt = now;
         IO.execute(() -> maintenanceSync(app, true));
     }
@@ -222,7 +230,7 @@ final class LauncherDiagnostics {
                     if (full) {
                         data.put("system", captureSystemSnapshot(context, false));
                     }
-                    appendEventSync(context, full ? "battery_sample_full" : "battery_sample", data, false);
+                    appendEventSync(context, full ? "battery_sample_full" : "battery_sample", data, true);
                     SharedPreferences.Editor editor = prefs.edit()
                             .putLong("last_sample_at", now);
                     if (full) editor.putLong("last_full_sample_at", now);
@@ -569,6 +577,8 @@ final class LauncherDiagnostics {
         HttpURLConnection connection = null;
         try {
             JSONArray events = new JSONArray();
+            List<JSONObject> priorityEvents = new ArrayList<>();
+            List<JSONObject> lowPriorityEvents = new ArrayList<>();
             int totalLines = 0;
             int invalidLines = 0;
             String firstTs = "";
@@ -579,18 +589,32 @@ final class LauncherDiagnostics {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         totalLines++;
-                        if (events.length() >= MAX_UPLOAD_EVENTS) continue;
                         try {
                             JSONObject event = new JSONObject(line);
-                            events.put(event);
                             String ts = event.optString("ts", "");
                             if (firstTs.isEmpty()) firstTs = ts;
                             lastTs = ts;
+                            if ("app_launch".equals(event.optString("event", ""))) {
+                                if (lowPriorityEvents.size() < 40) {
+                                    lowPriorityEvents.add(event);
+                                }
+                            } else if (priorityEvents.size() < MAX_UPLOAD_EVENTS) {
+                                priorityEvents.add(event);
+                            }
                         } catch (Throwable ignored) {
                             invalidLines++;
                         }
                     }
                 }
+            }
+
+            for (JSONObject event : priorityEvents) {
+                if (events.length() >= MAX_UPLOAD_EVENTS) break;
+                events.put(event);
+            }
+            for (JSONObject event : lowPriorityEvents) {
+                if (events.length() >= MAX_UPLOAD_EVENTS) break;
+                events.put(event);
             }
 
             if (events.length() == 0) {
@@ -602,6 +626,7 @@ final class LauncherDiagnostics {
             JSONObject summary = new JSONObject();
             summary.put("event_count_uploaded", events.length());
             summary.put("event_count_total", totalLines);
+            summary.put("event_count_omitted", Math.max(0, totalLines - invalidLines - events.length()));
             summary.put("invalid_line_count", invalidLines);
             summary.put("first_event_at", firstTs);
             summary.put("last_event_at", lastTs);
