@@ -1,12 +1,15 @@
 package vn.supra.pdalauncher;
 
 import android.app.ActivityManager;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.app.job.JobInfo;
 import android.app.job.JobScheduler;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -40,10 +43,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -58,13 +64,22 @@ final class LauncherDiagnostics {
     private static final String FILE_SUFFIX = ".jsonl";
     private static final String LATE_SUFFIX = "-late.jsonl";
     private static final long SAMPLE_INTERVAL_MS = 15L * 60L * 1000L;
-    private static final long FULL_SAMPLE_INTERVAL_MS = 60L * 60L * 1000L;
-    private static final long MIN_UPLOAD_CHECK_INTERVAL_MS = 60L * 1000L;
+    private static final long DT50_FULL_SAMPLE_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final long MAX_REGULAR_LOG_BYTES = 118_000L;
     private static final long MAX_CRITICAL_LOG_BYTES = 138_000L;
     private static final int MAX_UPLOAD_EVENTS = 180;
+    // Bound each archived segment under the server's 180-event limit.
+    private static final int MAX_SEGMENT_EVENTS = 140;
+    private static final long MAX_SEGMENT_BYTES = 70_000L;
+    private static final Map<String, Integer> SEGMENT_COUNTS = new HashMap<>();
     private static final int JOB_ID = 12910323;
-    private static final long JOB_INTERVAL_MS = 15L * 60L * 1000L;
+    private static final int UPLOAD_JOB_ID = 12910330;
+    private static final int DRAIN_JOB_ID = 12910331;
+    private static final int UPLOAD_FAILED = 0;
+    private static final int UPLOAD_BUFFERED = 1;
+    private static final int UPLOAD_DRIVE_SYNCED = 2;
+    private static final int RECEIPT_MISSING = 3;
+    private static final long JOB_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final TimeZone VN_TZ = TimeZone.getTimeZone("Asia/Ho_Chi_Minh");
     private static final long[] RETRY_DELAYS_MS = new long[] {
             15L * 60L * 1000L,
@@ -83,7 +98,6 @@ final class LauncherDiagnostics {
         return t;
     });
 
-    private static volatile long lastUploadCheckAt;
     private static volatile long lastBatterySignalAt;
     private static volatile int lastBatteryLevel = Integer.MIN_VALUE;
     private static volatile int lastBatteryStatus = Integer.MIN_VALUE;
@@ -94,15 +108,16 @@ final class LauncherDiagnostics {
     static void initialize(Context context) {
         final Context app = context.getApplicationContext();
         scheduleJob(app);
+        scheduleLogAlarms(app);
         installCrashHandler(app);
 
         if (INITIALIZED.compareAndSet(false, true)) {
             IO.execute(() -> {
                 try {
-                    JSONObject data = captureSystemSnapshot(app, true);
+                    JSONObject data = captureSystemSnapshot(app, isDt50());
                     appendEventSync(app, "process_start", data, true);
                     cleanupOldFiles(app);
-                    maintenanceSync(app, false);
+                    maintenanceSync(app, false, false);
                 } catch (Throwable ignored) { }
             });
         } else {
@@ -110,28 +125,120 @@ final class LauncherDiagnostics {
         }
     }
 
-    static void tick(Context context) {
+    // The clock UI is already updated once per minute. No minute-based log polling.
+    static void tick(Context context) { }
+
+    static void onScheduledLogAlarm(Context context) {
+        scheduleLogAlarms(context.getApplicationContext());
+        scheduleUploadJob(context.getApplicationContext());
+    }
+
+    static void onSystemClockOrBoot(Context context) {
+        scheduleLogAlarms(context.getApplicationContext());
+    }
+
+    private static int slotMinute(String deviceKey, String date, int baseMinutes) {
+        // Deterministic pseudo-random +/- 15 minutes per device, day, and slot.
+        // Each device remains stable after reboot, but fleet distribution varies by day.
+        try {
+            String digest = sha256Hex(deviceKey + "|" + date + "|" + baseMinutes);
+            int value = (int) Long.parseLong(digest.substring(0, 7), 16);
+            return baseMinutes + (value % 31) - 15;
+        } catch (Throwable ignored) {
+            return baseMinutes;
+        }
+    }
+
+    private static void scheduleLogAlarms(Context context) {
+        try {
+            AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (alarms == null) return;
+            String key = Prefs.getRegistryDeviceKey(context);
+            if (key == null || !key.matches("[a-fA-F0-9]{64}")) {
+                key = "unregistered-" + android.os.Build.MODEL;
+            }
+            for (int slot : new int[] { 13 * 60 + 30, 21 * 60 + 30 }) {
+                Calendar when = Calendar.getInstance(VN_TZ);
+                String date = dateKey(when.getTime());
+                int offsetMinutes = slotMinute(key, date, slot);
+                when.set(Calendar.HOUR_OF_DAY, offsetMinutes / 60);
+                when.set(Calendar.MINUTE, offsetMinutes % 60);
+                when.set(Calendar.SECOND, 0);
+                when.set(Calendar.MILLISECOND, 0);
+                if (when.getTimeInMillis() <= System.currentTimeMillis()) {
+                    when.add(Calendar.DAY_OF_YEAR, 1);
+                    date = dateKey(when.getTime());
+                    offsetMinutes = slotMinute(key, date, slot);
+                    when.set(Calendar.HOUR_OF_DAY, offsetMinutes / 60);
+                    when.set(Calendar.MINUTE, offsetMinutes % 60);
+                }
+                Intent intent = new Intent(context, LauncherLogAlarmReceiver.class);
+                intent.setAction("vn.supra.pdalauncher.LOG_UPLOAD_" + slot);
+                PendingIntent pending = PendingIntent.getBroadcast(context, slot, intent,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                if (android.os.Build.VERSION.SDK_INT >= 31 && !alarms.canScheduleExactAlarms()) {
+                    alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when.getTimeInMillis(), pending);
+                } else {
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when.getTimeInMillis(), pending);
+                }
+            }
+        } catch (Throwable error) {
+            recordOperationalEvent(context, "log_alarm_schedule_error", error.getClass().getSimpleName());
+        }
+    }
+
+    private static void scheduleUploadJob(Context context) {
+        try {
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (scheduler == null) return;
+            JobInfo job = new JobInfo.Builder(UPLOAD_JOB_ID,
+                    new ComponentName(context, LauncherDiagnosticJobService.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setOverrideDeadline(15L * 60L * 1000L)
+                    .build();
+            scheduler.schedule(job);
+        } catch (Throwable error) {
+            recordOperationalEvent(context, "upload_job_schedule_error", error.getClass().getSimpleName());
+        }
+    }
+
+    private static void scheduleDeferredDrain(Context context, long delayMs) {
+        try {
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (scheduler == null) return;
+            JobInfo job = new JobInfo.Builder(DRAIN_JOB_ID,
+                    new ComponentName(context, LauncherDiagnosticJobService.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setMinimumLatency(Math.max(45000L, delayMs))
+                    .setOverrideDeadline(Math.max(45000L, delayMs) + 15L * 60L * 1000L)
+                    .build();
+            scheduler.schedule(job);
+        } catch (Throwable ignored) { }
+    }
+
+    static void runScheduledUpload(Context context) {
         final Context app = context.getApplicationContext();
-        long now = System.currentTimeMillis();
-        Calendar calendar = Calendar.getInstance(VN_TZ);
-        int minuteOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 60
-                + calendar.get(Calendar.MINUTE);
-        boolean nearClose = minuteOfDay >= 21 * 60 + 50
-                && minuteOfDay <= 22 * 60 + 10;
-        long interval = nearClose
-                ? MIN_UPLOAD_CHECK_INTERVAL_MS
-                : 5L * 60L * 1000L;
-        if (now - lastUploadCheckAt < interval) return;
-        lastUploadCheckAt = now;
-        IO.execute(() -> maintenanceSync(app, true));
+        try {
+            JSONObject event = new JSONObject();
+            event.put("scheduled_window", "13:30/21:30 +/-15min Asia/Ho_Chi_Minh");
+            event.put("activated_at", isoNow());
+            appendEventSync(app, "scheduled_upload_wakeup", event, true);
+        } catch (Throwable ignored) { }
+        maintenanceSync(app, true, true);
+    }
+
+    private static String dateKey(Date date) {
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        f.setTimeZone(VN_TZ);
+        return f.format(date);
     }
 
     static void runPeriodicMaintenance(Context context) {
-        maintenanceSync(context.getApplicationContext(), true);
+        maintenanceSync(context.getApplicationContext(), true, false);
     }
 
     static void onBatteryChanged(Context context, Intent batteryIntent) {
-        if (batteryIntent == null) return;
+        if (batteryIntent == null || !isDt50()) return;
         int level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
         int scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
         int percent = level >= 0 && scale > 0 ? Math.round(level * 100f / scale) : -1;
@@ -218,17 +325,22 @@ final class LauncherDiagnostics {
         });
     }
 
-    private static void maintenanceSync(Context context, boolean allowSample) {
+    private static void maintenanceSync(Context context, boolean allowSample, boolean allowUpload) {
         try {
-            if (allowSample && isOperationalSamplingWindow()) {
+            if (allowSample && isDt50() && isOperationalSamplingWindow()) {
                 SharedPreferences prefs = diagPrefs(context);
                 long now = System.currentTimeMillis();
                 long lastSample = prefs.getLong("last_sample_at", 0L);
                 if (lastSample <= 0L || now - lastSample >= SAMPLE_INTERVAL_MS) {
                     long lastFull = prefs.getLong("last_full_sample_at", 0L);
-                    boolean full = lastFull <= 0L || now - lastFull >= FULL_SAMPLE_INTERVAL_MS;
+                    long fullInterval = DT50_FULL_SAMPLE_INTERVAL_MS;
+                    boolean full = lastFull <= 0L || now - lastFull >= fullInterval;
                     JSONObject data = new JSONObject();
-                    data.put("battery", captureBattery(context, null, full));
+                    JSONObject batterySample = captureBattery(context, null, full);
+                    data.put("battery", batterySample);
+                    if (isDt50()) {
+                        data.put("battery_trend", trackDt50BatteryTrend(context, batterySample, now));
+                    }
                     if (full) {
                         data.put("system", captureSystemSnapshot(context, false));
                     }
@@ -240,7 +352,7 @@ final class LauncherDiagnostics {
                 }
             }
             cleanupOldFiles(context);
-            uploadPendingSync(context);
+            if (allowUpload) uploadPendingSync(context);
         } catch (Throwable ignored) { }
     }
 
@@ -266,6 +378,13 @@ final class LauncherDiagnostics {
         build.put("android_version", safeText(Build.VERSION.RELEASE, 40));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             build.put("security_patch", safeText(Build.VERSION.SECURITY_PATCH, 40));
+        }
+        if (isDt50()) {
+            // Identify firmware variants without logging IMEI, serial or MEID.
+            build.put("build_id", safeText(Build.ID, 80));
+            build.put("firmware_display", safeText(Build.DISPLAY, 120));
+            build.put("firmware_incremental", safeText(Build.VERSION.INCREMENTAL, 120));
+            build.put("board", safeText(Build.BOARD, 80));
         }
         result.put("build", build);
 
@@ -306,7 +425,7 @@ final class LauncherDiagnostics {
         result.put("clock", clock);
 
         result.put("network", captureNetwork(context));
-        if (includeBattery) result.put("battery", captureBattery(context, null, true));
+        if (includeBattery && isDt50()) result.put("battery", captureBattery(context, null, true));
         return result;
     }
 
@@ -346,6 +465,8 @@ final class LauncherDiagnostics {
         }
 
         JSONObject out = new JSONObject();
+        out.put("capture_uptime_ms", SystemClock.elapsedRealtime());
+        if (isDt50()) out.put("diagnostic_schema", "dt50-battery-v2");
         if (battery != null) {
             int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
@@ -360,6 +481,10 @@ final class LauncherDiagnostics {
             broadcast.put("health", battery.getIntExtra(
                     BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
             broadcast.put("plugged", battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                broadcast.put("battery_low_flag",
+                        battery.getBooleanExtra(BatteryManager.EXTRA_BATTERY_LOW, false));
+            }
             broadcast.put("present",
                     battery.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true));
             broadcast.put("temperature_tenths_c",
@@ -383,6 +508,21 @@ final class LauncherDiagnostics {
                     BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
             putIntProperty(properties, "current_average_ua", manager,
                     BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                putIntProperty(properties, "status",
+                        manager, BatteryManager.BATTERY_PROPERTY_STATUS);
+            }
+            try {
+                properties.put("is_charging", manager.isCharging());
+            } catch (Throwable ignored) { }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    long remainingMs = manager.computeChargeTimeRemaining();
+                    if (remainingMs >= 0L) {
+                        properties.put("charge_time_remaining_ms", remainingMs);
+                    }
+                } catch (Throwable ignored) { }
+            }
             try {
                 long energy = manager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER);
                 if (energy != Long.MIN_VALUE) properties.put("energy_counter_nwh", energy);
@@ -390,12 +530,18 @@ final class LauncherDiagnostics {
             out.put("properties", properties);
         }
 
-        if (full) {
+        if (full && isDt50()) {
             out.put("power_supply", readPowerSupplySysfs());
             String dumpsys = readCommand(
                     new String[] { "/system/bin/dumpsys", "battery" }, 5000);
             if (!dumpsys.isEmpty()) out.put("dumpsys_battery", dumpsys);
+            out.put("dumpsys_battery_available", !dumpsys.isEmpty());
         }
+        // Lightweight local-only probe on DT50. No new HTTP requests or polling jobs.
+        // Sysfs opens are costly on vendor firmware. Probe only in the
+        // 3-hour full DT50 sample; keep charging events broadcast-only.
+        if (full && isDt50()) out.put("dt50_sysfs_probe", readDt50BatteryProbe());
+        out.put("source_comparison", compareBatterySources(out));
         return out;
     }
 
@@ -419,6 +565,9 @@ final class LauncherDiagnostics {
                 "capacity", "voltage_now", "current_now", "current_avg",
                 "charge_counter", "charge_now", "charge_full", "charge_full_design",
                 "energy_now", "energy_full", "energy_full_design",
+                "voltage_avg", "voltage_ocv", "voltage_min_design",
+                "voltage_max_design", "capacity_level", "charge_type",
+                "time_to_empty_now", "time_to_full_now",
                 "temp", "cycle_count"
         };
 
@@ -438,6 +587,191 @@ final class LauncherDiagnostics {
         return result;
     }
 
+
+    static boolean isDt50Device() { return isDt50(); }
+
+    private static boolean isDt50() {
+        String identity = (Build.MANUFACTURER + " " + Build.MODEL + " "
+                + Build.DEVICE + " " + Build.PRODUCT).toUpperCase(Locale.US);
+        return identity.contains("DT50");
+    }
+
+    // Battery-only sysfs probe is DT50-specific. Scheduled samples are
+    // at most every three hours; power-state transitions may add event samples.
+    private static JSONObject readDt50BatteryProbe() throws Exception {
+        JSONObject result = new JSONObject();
+        File[] supplies = new File("/sys/class/power_supply").listFiles();
+        if (supplies == null) {
+            result.put("_state", "unavailable_or_denied");
+            return result;
+        }
+        Arrays.sort(supplies, Comparator.comparing(File::getName));
+        int found = 0;
+        int readable = 0;
+        String[] fields = new String[] {
+                "type", "capacity", "capacity_level", "status", "health",
+                "present", "online", "voltage_now", "voltage_avg",
+                "voltage_ocv", "voltage_min_design", "voltage_max_design",
+                "current_now", "current_avg", "charge_now", "charge_full",
+                "charge_full_design", "charge_counter", "energy_now",
+                "energy_full", "energy_full_design", "cycle_count",
+                "charge_type", "temp", "time_to_empty_now", "time_to_full_now"
+        };
+        for (File supply : supplies) {
+            if (!supply.isDirectory()) continue;
+            String name = supply.getName();
+            String lower = name.toLowerCase(Locale.US);
+            String type = readSmallFile(new File(supply, "type"), 32);
+            if (!"battery".equalsIgnoreCase(type)
+                    && !lower.contains("battery") && !lower.contains("bms")) {
+                continue;
+            }
+            found++;
+            if (found > 3) break;
+            JSONObject values = new JSONObject();
+            for (String field : fields) {
+                String value = readSmallFile(new File(supply, field), 48);
+                if (!value.isEmpty()) values.put(field, value);
+            }
+            if (values.length() > 0) {
+                result.put(safeText(name, 48), values);
+                readable++;
+            }
+        }
+        result.put("_battery_supplies_found", found);
+        result.put("_readable_supplies", readable);
+        return result;
+    }
+
+    private static JSONObject compareBatterySources(JSONObject sample) throws Exception {
+        JSONObject comparison = new JSONObject();
+        JSONObject broadcast = sample.optJSONObject("broadcast");
+        JSONObject properties = sample.optJSONObject("properties");
+        int broadcastPercent = broadcast == null ? -1 : broadcast.optInt("percent", -1);
+        int managerPercent = properties == null ? -1
+                : properties.optInt("capacity_percent", -1);
+        if (broadcastPercent >= 0 && broadcastPercent <= 100) {
+            comparison.put("broadcast_percent", broadcastPercent);
+        }
+        if (managerPercent >= 0 && managerPercent <= 100) {
+            comparison.put("manager_percent", managerPercent);
+        }
+        int sysfsPercent = -1;
+        String sysfsName = "";
+        JSONObject probe = sample.optJSONObject("dt50_sysfs_probe");
+        if (probe != null) {
+            JSONArray names = probe.names();
+            if (names != null) {
+                for (int i = 0; i < names.length(); i++) {
+                    String name = names.optString(i);
+                    JSONObject supply = probe.optJSONObject(name);
+                    if (supply == null) continue;
+                    try {
+                        int level = Integer.parseInt(supply.optString("capacity", "").trim());
+                        if (level >= 0 && level <= 100) {
+                            sysfsPercent = level;
+                            sysfsName = name;
+                            break;
+                        }
+                    } catch (NumberFormatException ignored) { }
+                }
+            }
+        }
+        if (sysfsPercent >= 0) {
+            comparison.put("sysfs_percent", sysfsPercent);
+            comparison.put("sysfs_supply", sysfsName);
+        }
+        boolean disagreement = (broadcastPercent >= 0 && managerPercent >= 0
+                && Math.abs(broadcastPercent - managerPercent) > 2)
+                || (broadcastPercent >= 0 && sysfsPercent >= 0
+                && Math.abs(broadcastPercent - sysfsPercent) > 2)
+                || (managerPercent >= 0 && sysfsPercent >= 0
+                && Math.abs(managerPercent - sysfsPercent) > 2);
+        comparison.put("sources_disagree", disagreement);
+        comparison.put("independent_accuracy_verified", false);
+        return comparison;
+    }
+
+    private static JSONObject trackDt50BatteryTrend(
+            Context context, JSONObject sample, long now) throws Exception {
+        JSONObject trend = new JSONObject();
+        JSONObject broadcast = sample.optJSONObject("broadcast");
+        if (broadcast == null) {
+            trend.put("state", "broadcast_unavailable");
+            return trend;
+        }
+        int level = broadcast.optInt("percent", -1);
+        int voltage = broadcast.optInt("voltage_mv", -1);
+        int plugged = broadcast.optInt("plugged", -1);
+        if (level < 0 || level > 100) {
+            trend.put("state", "level_unavailable");
+            return trend;
+        }
+        SharedPreferences prefs = diagPrefs(context);
+        int priorLevel = prefs.getInt("dt50_probe_level", -1);
+        long since = prefs.getLong("dt50_probe_since", 0L);
+        int firstVoltage = prefs.getInt("dt50_probe_voltage_mv", -1);
+        int voltageMin = prefs.getInt("dt50_probe_voltage_min_mv", -1);
+        int voltageMax = prefs.getInt("dt50_probe_voltage_max_mv", -1);
+        JSONObject properties = sample.optJSONObject("properties");
+        int counter = properties == null ? -1
+                : properties.optInt("charge_counter_uah", -1);
+        int firstCounter = prefs.getInt("dt50_probe_counter_uah", -1);
+        int firstPlugged = prefs.getInt("dt50_probe_plugged", -1);
+        boolean plugChanged = prefs.getBoolean("dt50_probe_plug_changed", false);
+        if (level != priorLevel || since <= 0L || since > now) {
+            since = now;
+            firstVoltage = voltage;
+            voltageMin = voltage;
+            voltageMax = voltage;
+            firstCounter = counter;
+            firstPlugged = plugged;
+            plugChanged = false;
+        } else if (plugged >= 0 && firstPlugged >= 0 && plugged != firstPlugged) {
+            plugChanged = true;
+        }
+        if (voltage > 0) {
+            voltageMin = voltageMin > 0 ? Math.min(voltageMin, voltage) : voltage;
+            voltageMax = voltageMax > 0 ? Math.max(voltageMax, voltage) : voltage;
+        }
+        prefs.edit().putInt("dt50_probe_level", level)
+                .putLong("dt50_probe_since", since)
+                .putInt("dt50_probe_voltage_mv", firstVoltage)
+                .putInt("dt50_probe_voltage_min_mv", voltageMin)
+                .putInt("dt50_probe_voltage_max_mv", voltageMax)
+                .putInt("dt50_probe_counter_uah", firstCounter)
+                .putInt("dt50_probe_plugged", firstPlugged)
+                .putBoolean("dt50_probe_plug_changed", plugChanged)
+                .apply();
+
+        long unchangedMinutes = Math.max(0L, (now - since) / 60000L);
+        trend.put("reported_level_percent", level);
+        trend.put("reported_52_percent", level == 52);
+        trend.put("unchanged_minutes", unchangedMinutes);
+        if (voltageMin > 0 && voltageMax >= voltageMin) {
+            trend.put("voltage_min_mv", voltageMin);
+            trend.put("voltage_max_mv", voltageMax);
+            trend.put("voltage_span_mv", voltageMax - voltageMin);
+        }
+        if (counter >= 0 && firstCounter >= 0) {
+            trend.put("charge_counter_delta_uah", (long) counter - firstCounter);
+        }
+        trend.put("plug_state_changed_while_level_unchanged", plugChanged);
+        int voltageDelta = voltage > 0 && firstVoltage > 0
+                ? voltage - firstVoltage : Integer.MIN_VALUE;
+        if (voltageDelta != Integer.MIN_VALUE) {
+            trend.put("voltage_delta_mv", voltageDelta);
+        }
+        boolean suspicious = unchangedMinutes >= 60
+                && (plugChanged || (voltageMin > 0 && voltageMax > 0
+                && voltageMax - voltageMin >= 150)
+                || (counter >= 0 && firstCounter >= 0
+                && Math.abs((long) counter - firstCounter) >= 50000));
+        trend.put("possible_stale_percentage", suspicious);
+        trend.put("estimated_actual_percentage", JSONObject.NULL);
+        return trend;
+    }
+
     private static String readSmallFile(File file, int max) {
         if (file == null || !file.isFile() || !file.canRead()) return "";
         try (FileInputStream input = new FileInputStream(file)) {
@@ -451,29 +785,32 @@ final class LauncherDiagnostics {
     }
 
     private static String readCommand(String[] command, int maxChars) {
-        BufferedReader reader = null;
+        // Limit diagnostics so a vendor command cannot block the upload queue forever.
+        Process process = null;
         try {
-            Process process = Runtime.getRuntime().exec(command);
-            reader = new BufferedReader(new InputStreamReader(
-                    process.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null && out.length() < maxChars) {
-                if (line.toLowerCase(Locale.US).contains("serial")) continue;
-                out.append(line).append('\n');
+            process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            boolean completed = process.waitFor(1800, TimeUnit.MILLISECONDS);
+            if (!completed) {
+                process.destroyForcibly();
+                return "";
             }
-            try {
-                process.waitFor();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while (out.length() < maxChars && (line = reader.readLine()) != null) {
+                    if (line.toLowerCase(Locale.US).contains("serial")) continue;
+                    out.append(line).append('\n');
+                }
             }
             return safeText(out.toString(), maxChars);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return "";
         } catch (Throwable ignored) {
             return "";
         } finally {
-            if (reader != null) {
-                try { reader.close(); } catch (Throwable ignored) { }
-            }
+            if (process != null) process.destroy();
         }
     }
 
@@ -511,20 +848,62 @@ final class LauncherDiagnostics {
                     writer.newLine();
                     writer.flush();
                     if (critical) stream.getFD().sync();
+                    String path = file.getAbsolutePath();
+                    SEGMENT_COUNTS.put(path, SEGMENT_COUNTS.containsKey(path)
+                            ? SEGMENT_COUNTS.get(path) + 1 : 1);
                 }
             } catch (Throwable ignored) { }
         }
     }
 
     private static File activeLogFile(Context context) {
-        String date = vietnamDateKey();
-        File dir = logDir(context);
-        File main = new File(dir, FILE_PREFIX + date + FILE_SUFFIX);
-        File sent = sentMarker(main);
-        if (sent.exists() || closedMarker(main).exists()) {
-            return new File(dir, FILE_PREFIX + date + LATE_SUFFIX);
+        // The same clock-time segmentation as the upload alarm, but split
+        // busy periods into <=140-line parts. Never archive only the first
+        // 180 lines and then delete a log containing untransmitted events.
+        Calendar clock = Calendar.getInstance(VN_TZ);
+        String today = dateKey(clock.getTime());
+        String key = Prefs.getRegistryDeviceKey(context);
+        if (key == null || key.isEmpty()) key = "unregistered-" + Build.MODEL;
+        int minute = clock.get(Calendar.HOUR_OF_DAY) * 60 + clock.get(Calendar.MINUTE);
+        String slot;
+        String date = today;
+        if (minute < slotMinute(key, today, 13 * 60 + 30)) {
+            slot = "s1330";
+        } else if (minute < slotMinute(key, today, 21 * 60 + 30)) {
+            slot = "s2130";
+        } else {
+            clock.add(Calendar.DAY_OF_YEAR, 1);
+            date = dateKey(clock.getTime());
+            slot = "s1330";
         }
-        return main;
+        File dir = logDir(context);
+        for (int part = 0; part < 1000; part++) {
+            String suffix = String.format(Locale.US, "-%s-p%03d%s", slot, part, FILE_SUFFIX);
+            File file = new File(dir, FILE_PREFIX + date + suffix);
+            if (closedMarker(file).exists() || sentMarker(file).exists()) continue;
+            if (file.length() >= MAX_SEGMENT_BYTES || logLineCount(file) >= MAX_SEGMENT_EVENTS) {
+                closeForUpload(file);
+                continue;
+            }
+            return file;
+        }
+        // Never overwrite/append a completed segment on an overloaded PDA.
+        throw new IllegalStateException("LAUNCHER_LOG_SEGMENT_CAP_REACHED");
+    }
+
+    private static int logLineCount(File file) {
+        String path = file.getAbsolutePath();
+        Integer cached = SEGMENT_COUNTS.get(path);
+        if (cached != null) return cached;
+        int count = 0;
+        if (file.isFile()) {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                while (reader.readLine() != null) count++;
+            } catch (Throwable ignored) { }
+        }
+        SEGMENT_COUNTS.put(path, count);
+        return count;
     }
 
     private static void incrementDropped(Context context, String kind) {
@@ -555,36 +934,65 @@ final class LauncherDiagnostics {
                 if (sentMarker(file).exists()) continue;
                 String date = dateFromFile(file);
                 if (date.isEmpty()) continue;
-                if (file.getName().contains("-late")
-                        && date.equals(vietnamDateKey())) {
-                    continue;
-                }
-                if (!isUploadDue(deviceKey, date)) continue;
+                if (!isUploadDue(deviceKey, file)) continue;
                 if (!retryDue(file)) continue;
 
                 closeForUpload(file);
-                boolean success = uploadFile(context, file, deviceKey, date);
-                if (success) {
-                    markSent(file);
-                    clearRetry(file);
+                int result = UPLOAD_FAILED;
+                File buffered = bufferedMarker(file);
+                if (buffered.isFile()) {
+                    result = checkDriveArchiveReceipt(file, deviceKey);
+                    if (result == RECEIPT_MISSING) {
+                        // The server no longer has the buffer (e.g. retention).
+                        // Resend once with the same immutable, closed file.
+                        buffered.delete();
+                    } else if (result == UPLOAD_DRIVE_SYNCED) {
+                        deleteAfterDriveReceipt(file);
+                        uploaded++;
+                    } else if (result == UPLOAD_BUFFERED) {
+                        // No repetitive POST and no frequent status polling:
+                        // check again at the next pre-existing upload window.
+                        clearRetry(file);
+                    } else {
+                        scheduleRetry(file);
+                    }
+                    if (result != RECEIPT_MISSING) {
+                        if (result == UPLOAD_DRIVE_SYNCED) scheduleNextQueuedFile(context, files, file, deviceKey);
+                        break;
+                    }
+                }
+
+                result = uploadFile(context, file, deviceKey, date);
+                if (result == UPLOAD_DRIVE_SYNCED) {
+                    deleteAfterDriveReceipt(file);
                     uploaded++;
+                    scheduleNextQueuedFile(context, files, file, deviceKey);
+                } else if (result == UPLOAD_BUFFERED) {
+                    // Durable server buffer received but the Google Drive copy
+                    // may not exist. Persist receipt identity; keep the data.
+                    try {
+                        String bundleId = bundleIdFor(file, deviceKey, date);
+                        markBuffered(file, bundleId);
+                        clearRetry(file);
+                    } catch (Throwable ignored) {
+                        scheduleRetry(file);
+                    }
                 } else {
                     scheduleRetry(file);
-                    break;
+                    scheduleDeferredDrain(context, nextRetryDelay(file));
                 }
+                break;
             }
         } finally {
             UPLOAD_IN_FLIGHT.set(false);
         }
     }
 
-    private static boolean uploadFile(
+    private static int uploadFile(
             Context context, File file, String deviceKey, String date) {
         HttpURLConnection connection = null;
         try {
             JSONArray events = new JSONArray();
-            List<JSONObject> priorityEvents = new ArrayList<>();
-            List<JSONObject> lowPriorityEvents = new ArrayList<>();
             int totalLines = 0;
             int invalidLines = 0;
             String firstTs = "";
@@ -600,13 +1008,12 @@ final class LauncherDiagnostics {
                             String ts = event.optString("ts", "");
                             if (firstTs.isEmpty()) firstTs = ts;
                             lastTs = ts;
-                            if ("app_launch".equals(event.optString("event", ""))) {
-                                if (lowPriorityEvents.size() < 40) {
-                                    lowPriorityEvents.add(event);
-                                }
-                            } else if (priorityEvents.size() < MAX_UPLOAD_EVENTS) {
-                                priorityEvents.add(event);
+                            if (events.length() >= MAX_UPLOAD_EVENTS) {
+                                // Never silently archive a partial segment and
+                                // delete its untransmitted records.
+                                return UPLOAD_FAILED;
                             }
+                            events.put(event);
                         } catch (Throwable ignored) {
                             invalidLines++;
                         }
@@ -614,21 +1021,19 @@ final class LauncherDiagnostics {
                 }
             }
 
-            for (JSONObject event : priorityEvents) {
-                if (events.length() >= MAX_UPLOAD_EVENTS) break;
-                events.put(event);
+            if (invalidLines > 0 || events.length() != totalLines) {
+                // Invalid JSONL remains on-device for repair/manual analysis.
+                return UPLOAD_FAILED;
             }
-            for (JSONObject event : lowPriorityEvents) {
-                if (events.length() >= MAX_UPLOAD_EVENTS) break;
-                events.put(event);
-            }
-
             if (events.length() == 0) {
-                markSent(file);
-                return true;
+                // Even a damaged/non-parsable log must be retained until
+                // its contents can be inspected or repaired.
+                return UPLOAD_FAILED;
             }
 
-            String suffix = file.getName().contains("-late") ? "late" : "main";
+            String suffix = file.getName().contains("-s1330") ? "s1330"
+                    : file.getName().contains("-s2130") ? "s2130"
+                    : file.getName().contains("-late") ? "late" : "main";
             JSONObject summary = new JSONObject();
             summary.put("event_count_uploaded", events.length());
             summary.put("event_count_total", totalLines);
@@ -644,7 +1049,7 @@ final class LauncherDiagnostics {
 
             JSONObject payload = new JSONObject();
             payload.put("date", date);
-            payload.put("upload_window", uploadWindow(deviceKey));
+            payload.put("upload_window", uploadWindow(deviceKey, date, suffix));
             payload.put("summary", summary);
             payload.put("events", events);
 
@@ -669,8 +1074,7 @@ final class LauncherDiagnostics {
             body.put("reason", suffix.equals("late")
                     ? "launcher_daily_diagnostic_late"
                     : "launcher_daily_diagnostic");
-            body.put("bundle_id", sha256Hex(
-                    deviceKey + "|" + date + "|" + suffix + "|" + file.length()).substring(0, 32));
+            body.put("bundle_id", bundleIdFor(file, deviceKey, date));
             body.put("boundary_id",
                     "launcher:" + deviceKey.substring(0, 16).toLowerCase(Locale.US)
                             + ":" + date + ":" + suffix);
@@ -679,7 +1083,7 @@ final class LauncherDiagnostics {
             body.put("payload", payload);
 
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > 155_000) return false;
+            if (bytes.length > 155_000) return UPLOAD_FAILED;
 
             connection = (HttpURLConnection) new URL(API_URL).openConnection();
             connection.setRequestMethod("POST");
@@ -699,40 +1103,143 @@ final class LauncherDiagnostics {
             }
 
             int code = connection.getResponseCode();
-            return code >= 200 && code < 300;
+            if (code != 200 && code != 202) return UPLOAD_FAILED;
+            JSONObject reply;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder data = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null && data.length() < 4096) data.append(line);
+                reply = new JSONObject(data.toString());
+            }
+            if (reply.optBoolean("archived", false)
+                    && "DRIVE_SYNCED".equals(reply.optString("archive_status", ""))) {
+                return UPLOAD_DRIVE_SYNCED;
+            }
+            if ("BUFFERED".equals(reply.optString("status", ""))) return UPLOAD_BUFFERED;
+            return UPLOAD_FAILED;
         } catch (Throwable ignored) {
-            return false;
+            return UPLOAD_FAILED;
         } finally {
             if (connection != null) connection.disconnect();
         }
     }
 
-    private static boolean isUploadDue(String deviceKey, String fileDate) {
-        String today = vietnamDateKey();
-        int compare = fileDate.compareTo(today);
-        if (compare < 0) return true;
-        if (compare > 0) return false;
-
-        Calendar calendar = Calendar.getInstance(VN_TZ);
-        int minutes = calendar.get(Calendar.HOUR_OF_DAY) * 60
-                + calendar.get(Calendar.MINUTE);
-        return minutes >= targetUploadMinute(deviceKey);
+    private static String bundleIdFor(File file, String deviceKey, String date) throws Exception {
+        String name = file.getName();
+        String suffix = name.contains("-s1330") ? "s1330"
+                : name.contains("-s2130") ? "s2130"
+                : name.contains("-late") ? "late" : "main";
+        String unique = file.getName().matches(".*-p[0-9]{3}\\.jsonl$")
+                ? file.getName() : suffix;
+        return sha256Hex(deviceKey + "|" + date + "|" + unique + "|" + file.length())
+                .substring(0, 32);
     }
 
-    private static int targetUploadMinute(String deviceKey) {
-        int hash;
-        try {
-            hash = (int) (Long.parseLong(deviceKey.substring(0, 8), 16) & 0x7fffffffL);
-        } catch (Throwable ignored) {
-            hash = Math.abs(deviceKey.hashCode());
+    private static void scheduleNextQueuedFile(
+            Context context, File[] files, File completed, String deviceKey) {
+        for (File candidate : files) {
+            if (!candidate.equals(completed)
+                    && !sentMarker(candidate).exists()
+                    && isUploadDue(deviceKey, candidate)) {
+                // Keep server's existing 30-second device throttle intact.
+                scheduleDeferredDrain(context, 45_000L);
+                return;
+            }
         }
-        return 21 * 60 + 55 + (hash % 6);
     }
 
-    private static String uploadWindow(String deviceKey) {
-        int minuteOfDay = targetUploadMinute(deviceKey);
+    private static File bufferedMarker(File file) {
+        return new File(file.getParentFile(), file.getName() + ".buffered");
+    }
+
+    private static void markBuffered(File file, String bundleId) {
+        synchronized (FILE_LOCK) {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(bufferedMarker(file), false))) {
+                writer.write(bundleId);
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    private static int checkDriveArchiveReceipt(File file, String deviceKey) {
+        HttpURLConnection connection = null;
+        try {
+            String bundleId;
+            try (BufferedReader reader = new BufferedReader(new FileReader(bufferedMarker(file)))) {
+                bundleId = reader.readLine();
+            }
+            if (bundleId == null || !bundleId.matches("[0-9a-f]{32,64}")) return RECEIPT_MISSING;
+            String url = API_URL + "/status?device_key=" + deviceKey + "&bundle_id=" + bundleId;
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setConnectTimeout(6000);
+            connection.setReadTimeout(9000);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("x-supra-launcher-log-version", "1");
+            int code = connection.getResponseCode();
+            if (code == 404) return RECEIPT_MISSING;
+            if (code != 200) return UPLOAD_FAILED;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder raw = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null && raw.length() < 4096) raw.append(line);
+                JSONObject receipt = new JSONObject(raw.toString());
+                return receipt.optBoolean("archived", false)
+                        && "DRIVE_SYNCED".equals(receipt.optString("status", ""))
+                        ? UPLOAD_DRIVE_SYNCED : UPLOAD_BUFFERED;
+            }
+        } catch (Throwable ignored) {
+            return UPLOAD_FAILED;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static void deleteAfterDriveReceipt(File file) {
+        // Write local receipt before deletion so interruption cannot
+        // accidentally cause a second full upload.
+        synchronized (FILE_LOCK) {
+            markSent(file);
+            if (file.delete() || !file.exists()) {
+                SEGMENT_COUNTS.remove(file.getAbsolutePath());
+                clearRetry(file);
+                closedMarker(file).delete();
+                bufferedMarker(file).delete();
+                sentMarker(file).delete();
+            }
+        }
+    }
+
+    private static long nextRetryDelay(File file) {
+        File marker = retryMarker(file);
+        try (BufferedReader reader = new BufferedReader(new FileReader(marker))) {
+            String[] parts = reader.readLine().split(",");
+            return Math.max(60_000L, Long.parseLong(parts[1]) - System.currentTimeMillis());
+        } catch (Throwable ignored) {
+            return 15L * 60L * 1000L;
+        }
+    }
+
+    private static boolean isUploadDue(String deviceKey, File file) {
+        String date = dateFromFile(file);
+        String today = vietnamDateKey();
+        int comparison = date.compareTo(today);
+        if (comparison < 0) return true;
+        if (comparison > 0) return false;
+        // Never send an unfinished segment early, even on Launcher relaunch.
+        String filename = file.getName();
+        if (filename.contains("-late")) return false; // Legacy late logs: tomorrow.
+        int base = filename.contains("-s1330") ? 13 * 60 + 30 : 21 * 60 + 30;
+        Calendar calendar = Calendar.getInstance(VN_TZ);
+        int nowMinute = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE);
+        return nowMinute >= slotMinute(deviceKey, today, base);
+    }
+
+    private static String uploadWindow(String deviceKey, String date, String suffix) {
+        int base = "s1330".equals(suffix) ? 13 * 60 + 30 : 21 * 60 + 30;
+        int minute = slotMinute(deviceKey, date, base);
         return String.format(Locale.US, "%02d:%02d Asia/Ho_Chi_Minh",
-                minuteOfDay / 60, minuteOfDay % 60);
+                minute / 60, minute % 60);
     }
 
     private static boolean networkUsable(Context context) {
@@ -829,31 +1336,37 @@ final class LauncherDiagnostics {
     private static void cleanupOldFiles(Context context) {
         File[] files = logDir(context).listFiles();
         if (files == null) return;
-        long now = System.currentTimeMillis();
-        long sentCutoff = now - 7L * 24L * 60L * 60L * 1000L;
-        long unsentCutoff = now - 14L * 24L * 60L * 60L * 1000L;
-
+        final String deviceKey = Prefs.getRegistryDeviceKey(context);
+        final long staleMarkerCutoff = System.currentTimeMillis() - 7L * 24L * 60L * 60L * 1000L;
         for (File file : files) {
             try {
-                if (file.getName().endsWith(".sent")
-                        || file.getName().endsWith(".retry")
-                        || file.getName().endsWith(".closed")) {
-                    if (file.lastModified() < sentCutoff) file.delete();
-                    continue;
-                }
-                if (!file.getName().endsWith(FILE_SUFFIX)) continue;
-                if (sentMarker(file).exists()) {
-                    if (file.lastModified() < sentCutoff) {
-                        file.delete();
+                String name = file.getName();
+                if (name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX)) {
+                    // Old v0.3.24 clients mistakenly wrote .sent for HTTP 200
+                    // even when Drive was DEFERRED. Revalidate historical logs
+                    // that still exist instead of discarding them.
+                    if (sentMarker(file).exists()
+                            && !name.contains("-s1330")
+                            && !name.contains("-s2130")
+                            && deviceKey != null && deviceKey.matches("[a-fA-F0-9]{64}")) {
+                        markBuffered(file, bundleIdFor(file, deviceKey, dateFromFile(file)));
                         sentMarker(file).delete();
-                        retryMarker(file).delete();
-                        closedMarker(file).delete();
                     }
-                } else if (file.lastModified() < unsentCutoff) {
-                    file.delete();
-                    retryMarker(file).delete();
-                    closedMarker(file).delete();
+                    if (sentMarker(file).exists()) {
+                        // Already Drive-verified on v0.3.25. Complete a previous
+                        // interrupted deletion; never clear .sent if file remains.
+                        deleteAfterDriveReceipt(file);
+                    }
+                } else if ((name.endsWith(".retry") || name.endsWith(".closed")
+                        || name.endsWith(".buffered") || name.endsWith(".sent"))
+                        && file.lastModified() < staleMarkerCutoff) {
+                    String suffix = name.substring(name.lastIndexOf('.'));
+                    File parentLog = new File(file.getParentFile(),
+                            name.substring(0, name.length() - suffix.length()));
+                    if (!parentLog.exists()) file.delete();
                 }
+                // NEVER auto-delete an unsent JSONL because it is 14 days old.
+                // If Drive is unavailable, data must survive until confirmed.
             } catch (Throwable ignored) { }
         }
     }
@@ -870,25 +1383,22 @@ final class LauncherDiagnostics {
 
     private static void scheduleJob(Context context) {
         try {
-            JobScheduler scheduler =
-                    (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
             if (scheduler == null) return;
-            JobInfo existing = null;
-            for (JobInfo info : scheduler.getAllPendingJobs()) {
-                if (info.getId() == JOB_ID) {
-                    existing = info;
-                    break;
-                }
+            JobInfo existing = scheduler.getPendingJob(JOB_ID);
+            if (!isDt50()) {
+                if (existing != null) scheduler.cancel(JOB_ID);
+                return;
             }
-            if (existing != null) return;
-
-            JobInfo job = new JobInfo.Builder(
-                    JOB_ID,
+            // Replace the legacy 15-minute periodic sampling with a DT50-only
+            // 3-hour JobScheduler sample; Android can defer this to save power.
+            if (existing != null && existing.getIntervalMillis() == JOB_INTERVAL_MS) return;
+            if (existing != null) scheduler.cancel(JOB_ID);
+            scheduler.schedule(new JobInfo.Builder(JOB_ID,
                     new ComponentName(context, LauncherDiagnosticJobService.class))
                     .setPeriodic(JOB_INTERVAL_MS)
                     .setPersisted(true)
-                    .build();
-            scheduler.schedule(job);
+                    .build());
         } catch (Throwable ignored) { }
     }
 

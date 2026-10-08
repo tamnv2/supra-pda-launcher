@@ -190,6 +190,7 @@ final class DeviceRegistryClient {
                     System.currentTimeMillis());
             LauncherDiagnostics.recordOperationalEvent(
                     context, "registry_synced", "sheet_synced");
+            LauncherDiagnostics.onSystemClockOrBoot(context);
         } catch (Throwable error) {
             LauncherDiagnostics.recordOperationalEvent(
                     context, "registry_register_exception", error.getClass().getSimpleName());

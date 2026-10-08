@@ -7,7 +7,11 @@ public class LauncherDiagnosticJobService extends JobService {
     @Override public boolean onStartJob(final JobParameters params) {
         new Thread(() -> {
             try {
-                LauncherDiagnostics.runPeriodicMaintenance(getApplicationContext());
+                if (params.getJobId() == 12910330 || params.getJobId() == 12910331) {
+                    LauncherDiagnostics.runScheduledUpload(getApplicationContext());
+                } else {
+                    LauncherDiagnostics.runPeriodicMaintenance(getApplicationContext());
+                }
             } finally {
                 jobFinished(params, false);
             }

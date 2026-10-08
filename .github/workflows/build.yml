@@ -26,6 +26,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Launcher v0.3.25 safety regression
+        run: python3 tools/launcher_325_regression_guard.py
+
       - name: Build debug and release variants
         run: gradle :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace
 

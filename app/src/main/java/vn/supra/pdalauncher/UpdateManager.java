@@ -85,7 +85,14 @@ final class UpdateManager {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(MANIFEST_URL).openConnection();
+                // The server resolves manufacturer/model from its own PDA Registry.
+                // Never trust a model name supplied by an unauthenticated client.
+                String deviceKey = Prefs.getRegistryDeviceKey(activity);
+                String checkUrl = MANIFEST_URL;
+                if (deviceKey != null && deviceKey.matches("[a-fA-F0-9]{64}")) {
+                    checkUrl += "?device_key=" + deviceKey.toLowerCase(Locale.US);
+                }
+                connection = (HttpURLConnection) new URL(checkUrl).openConnection();
                 connection.setConnectTimeout(8000);
                 connection.setReadTimeout(10000);
                 connection.setRequestProperty("Accept", "application/json");
@@ -110,6 +117,8 @@ final class UpdateManager {
                 String sha256 = manifest.optString("sha256", "")
                         .trim().toLowerCase(Locale.US);
                 String apkPath = manifest.optString("apk_path", "").trim();
+                boolean required = manifest.optBoolean("required", true);
+                String policyId = manifest.optString("policy_id", "foundation");
 
                 if (latestVersion.length() == 0
                         || latestVersionCode <= 0
@@ -125,21 +134,26 @@ final class UpdateManager {
 
                     // Once a newer release is observed, persist the gate locally.
                     // It stays enforced across app restarts and installer cancellation.
-                    Prefs.markRequiredUpdate(
-                            activity,
-                            versionToShow,
-                            latestVersionCode,
-                            urlToDownload,
-                            expectedSha256);
+                    if (required) {
+                        Prefs.markRequiredUpdate(
+                                activity, versionToShow, latestVersionCode,
+                                urlToDownload, expectedSha256);
+                    } else {
+                        Prefs.clearRequiredUpdate(activity);
+                    }
                     LauncherDiagnostics.recordUpdateEvent(
-                            activity, "update_required", versionToShow);
-
-                    activity.runOnUiThread(() ->
+                            activity, required ? "update_required" : "update_available",
+                            versionToShow + " policy=" + policyId);
+                    activity.runOnUiThread(() -> {
+                        if (required) {
                             showRequiredUpdateDialog(
-                                    activity,
-                                    versionToShow,
-                                    urlToDownload,
-                                    expectedSha256));
+                                    activity, versionToShow, urlToDownload, expectedSha256);
+                        } else if (showUpToDate) {
+                            dismissRequiredDialog();
+                            showOptionalUpdateDialog(activity, versionToShow,
+                                    urlToDownload, expectedSha256);
+                        }
+                    });
                 } else {
                     // This also releases the gate if the server/channel was rolled
                     // back to a known-good version after a bad release.
@@ -172,6 +186,18 @@ final class UpdateManager {
                 CHECK_IN_FLIGHT.set(false);
             }
         }, "supra-update-check").start();
+    }
+
+    private static void showOptionalUpdateDialog(
+            Activity activity, String version, String url, String expectedSha256) {
+        if (activity.isFinishing()) return;
+        new AlertDialog.Builder(activity)
+                .setTitle("Có bản Launcher mới " + version)
+                .setMessage("Có thể cập nhật bây giờ hoặc tiếp tục sử dụng phiên bản hiện tại.")
+                .setPositiveButton("Cập nhật", (d, which) ->
+                        startDownload(activity, version, url, expectedSha256))
+                .setNegativeButton("Để sau", null)
+                .show();
     }
 
     private static void showCachedRequiredDialog(Activity activity) {

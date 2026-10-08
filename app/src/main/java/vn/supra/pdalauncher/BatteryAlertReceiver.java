@@ -19,15 +19,17 @@ public class BatteryAlertReceiver extends BroadcastReceiver {
         if (intent == null || intent.getAction() == null) return;
 
         if (Intent.ACTION_BATTERY_OKAY.equals(intent.getAction())) {
-            LauncherDiagnostics.recordOperationalEvent(
-                    context, "battery_okay_signal", "");
+            if (LauncherDiagnostics.isDt50Device()) {
+                LauncherDiagnostics.recordOperationalEvent(context, "battery_okay_signal", "");
+            }
             cancel(context);
             return;
         }
 
         if (!Intent.ACTION_BATTERY_LOW.equals(intent.getAction())) return;
-        LauncherDiagnostics.recordOperationalEvent(
-                context, "battery_low_signal", "");
+        if (LauncherDiagnostics.isDt50Device()) {
+            LauncherDiagnostics.recordOperationalEvent(context, "battery_low_signal", "");
+        }
         if (!Prefs.isLowBatteryAlertEnabled(context)) return;
 
         showLowBattery(context);
