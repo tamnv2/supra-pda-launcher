@@ -68,6 +68,7 @@ final class LauncherDiagnostics {
     private static final int MAX_UPLOAD_EVENTS = 180;
     private static final int JOB_ID = 12910323;
     private static final int UPLOAD_JOB_ID = 12910330;
+    private static final int DRAIN_JOB_ID = 12910331;
     private static final long JOB_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final TimeZone VN_TZ = TimeZone.getTimeZone("Asia/Ho_Chi_Minh");
     private static final long[] RETRY_DELAYS_MS = new long[] {
@@ -189,6 +190,20 @@ final class LauncherDiagnostics {
         } catch (Throwable error) {
             recordOperationalEvent(context, "upload_job_schedule_error", error.getClass().getSimpleName());
         }
+    }
+
+    private static void scheduleDeferredDrain(Context context, long delayMs) {
+        try {
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (scheduler == null) return;
+            JobInfo job = new JobInfo.Builder(DRAIN_JOB_ID,
+                    new ComponentName(context, LauncherDiagnosticJobService.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setMinimumLatency(Math.max(45000L, delayMs))
+                    .setOverrideDeadline(Math.max(45000L, delayMs) + 15L * 60L * 1000L)
+                    .build();
+            scheduler.schedule(job);
+        } catch (Throwable ignored) { }
     }
 
     static void runScheduledUpload(Context context) {
@@ -887,8 +902,22 @@ final class LauncherDiagnostics {
                     markSent(file);
                     clearRetry(file);
                     uploaded++;
+                    // Respect the server's 30-second per-device limit. One-shot
+                    // follow-up jobs are created only when there is an actual
+                    // backlog; never poll for log delivery.
+                    for (File candidate : files) {
+                        if (!candidate.equals(file) && !sentMarker(candidate).exists()
+                                && !candidate.getName().equals(file.getName())
+                                && isUploadDue(deviceKey, candidate)) {
+                            scheduleDeferredDrain(context, 45_000L);
+                            break;
+                        }
+                    }
+                    break;
                 } else {
                     scheduleRetry(file);
+                    // Exponential backoff is persisted beside the file.
+                    scheduleDeferredDrain(context, RETRY_DELAYS_MS[0] + 60_000L);
                     break;
                 }
             }
