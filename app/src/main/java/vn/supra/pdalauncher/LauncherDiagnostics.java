@@ -43,6 +43,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -66,6 +68,10 @@ final class LauncherDiagnostics {
     private static final long MAX_REGULAR_LOG_BYTES = 118_000L;
     private static final long MAX_CRITICAL_LOG_BYTES = 138_000L;
     private static final int MAX_UPLOAD_EVENTS = 180;
+    // Bound each archived segment under the server's 180-event limit.
+    private static final int MAX_SEGMENT_EVENTS = 140;
+    private static final long MAX_SEGMENT_BYTES = 70_000L;
+    private static final Map<String, Integer> SEGMENT_COUNTS = new HashMap<>();
     private static final int JOB_ID = 12910323;
     private static final int UPLOAD_JOB_ID = 12910330;
     private static final int DRAIN_JOB_ID = 12910331;
@@ -111,7 +117,7 @@ final class LauncherDiagnostics {
                     JSONObject data = captureSystemSnapshot(app, isDt50());
                     appendEventSync(app, "process_start", data, true);
                     cleanupOldFiles(app);
-                    maintenanceSync(app, false);
+                    maintenanceSync(app, false, false);
                 } catch (Throwable ignored) { }
             });
         } else {
@@ -218,7 +224,7 @@ final class LauncherDiagnostics {
             event.put("activated_at", isoNow());
             appendEventSync(app, "scheduled_upload_wakeup", event, true);
         } catch (Throwable ignored) { }
-        maintenanceSync(app, true);
+        maintenanceSync(app, true, true);
     }
 
     private static String dateKey(Date date) {
@@ -228,7 +234,7 @@ final class LauncherDiagnostics {
     }
 
     static void runPeriodicMaintenance(Context context) {
-        maintenanceSync(context.getApplicationContext(), true);
+        maintenanceSync(context.getApplicationContext(), true, false);
     }
 
     static void onBatteryChanged(Context context, Intent batteryIntent) {
@@ -319,7 +325,7 @@ final class LauncherDiagnostics {
         });
     }
 
-    private static void maintenanceSync(Context context, boolean allowSample) {
+    private static void maintenanceSync(Context context, boolean allowSample, boolean allowUpload) {
         try {
             if (allowSample && isDt50() && isOperationalSamplingWindow()) {
                 SharedPreferences prefs = diagPrefs(context);
@@ -346,7 +352,7 @@ final class LauncherDiagnostics {
                 }
             }
             cleanupOldFiles(context);
-            uploadPendingSync(context);
+            if (allowUpload) uploadPendingSync(context);
         } catch (Throwable ignored) { }
     }
 
@@ -532,7 +538,9 @@ final class LauncherDiagnostics {
             out.put("dumpsys_battery_available", !dumpsys.isEmpty());
         }
         // Lightweight local-only probe on DT50. No new HTTP requests or polling jobs.
-        if (isDt50()) out.put("dt50_sysfs_probe", readDt50BatteryProbe());
+        // Sysfs opens are costly on vendor firmware. Probe only in the
+        // 3-hour full DT50 sample; keep charging events broadcast-only.
+        if (full && isDt50()) out.put("dt50_sysfs_probe", readDt50BatteryProbe());
         out.put("source_comparison", compareBatterySources(out));
         return out;
     }
@@ -840,35 +848,62 @@ final class LauncherDiagnostics {
                     writer.newLine();
                     writer.flush();
                     if (critical) stream.getFD().sync();
+                    String path = file.getAbsolutePath();
+                    SEGMENT_COUNTS.put(path, SEGMENT_COUNTS.containsKey(path)
+                            ? SEGMENT_COUNTS.get(path) + 1 : 1);
                 }
             } catch (Throwable ignored) { }
         }
     }
 
     private static File activeLogFile(Context context) {
-        // Rotate by *scheduled time* even when no network is available.
-        // Two independent files per operational day; writes after the evening
-        // window are retained for the following morning.
-        String today = vietnamDateKey();
+        // The same clock-time segmentation as the upload alarm, but split
+        // busy periods into <=140-line parts. Never archive only the first
+        // 180 lines and then delete a log containing untransmitted events.
+        Calendar clock = Calendar.getInstance(VN_TZ);
+        String today = dateKey(clock.getTime());
         String key = Prefs.getRegistryDeviceKey(context);
         if (key == null || key.isEmpty()) key = "unregistered-" + Build.MODEL;
-        Calendar local = Calendar.getInstance(VN_TZ);
-        int minute = local.get(Calendar.HOUR_OF_DAY) * 60 + local.get(Calendar.MINUTE);
+        int minute = clock.get(Calendar.HOUR_OF_DAY) * 60 + clock.get(Calendar.MINUTE);
+        String slot;
+        String date = today;
+        if (minute < slotMinute(key, today, 13 * 60 + 30)) {
+            slot = "s1330";
+        } else if (minute < slotMinute(key, today, 21 * 60 + 30)) {
+            slot = "s2130";
+        } else {
+            clock.add(Calendar.DAY_OF_YEAR, 1);
+            date = dateKey(clock.getTime());
+            slot = "s1330";
+        }
         File dir = logDir(context);
-        File first = new File(dir, FILE_PREFIX + today + "-s1330" + FILE_SUFFIX);
-        if (minute >= slotMinute(key, today, 13 * 60 + 30)) {
-            if (first.isFile() && !closedMarker(first).exists()) closeForUpload(first);
-        } else if (!closedMarker(first).exists() && !sentMarker(first).exists()) {
-            return first;
+        for (int part = 0; part < 1000; part++) {
+            String suffix = String.format(Locale.US, "-%s-p%03d%s", slot, part, FILE_SUFFIX);
+            File file = new File(dir, FILE_PREFIX + date + suffix);
+            if (closedMarker(file).exists() || sentMarker(file).exists()) continue;
+            if (file.length() >= MAX_SEGMENT_BYTES || logLineCount(file) >= MAX_SEGMENT_EVENTS) {
+                closeForUpload(file);
+                continue;
+            }
+            return file;
         }
-        File second = new File(dir, FILE_PREFIX + today + "-s2130" + FILE_SUFFIX);
-        if (minute >= slotMinute(key, today, 21 * 60 + 30)) {
-            if (second.isFile() && !closedMarker(second).exists()) closeForUpload(second);
-        } else if (!closedMarker(second).exists() && !sentMarker(second).exists()) {
-            return second;
+        // Never overwrite/append a completed segment on an overloaded PDA.
+        throw new IllegalStateException("LAUNCHER_LOG_SEGMENT_CAP_REACHED");
+    }
+
+    private static int logLineCount(File file) {
+        String path = file.getAbsolutePath();
+        Integer cached = SEGMENT_COUNTS.get(path);
+        if (cached != null) return cached;
+        int count = 0;
+        if (file.isFile()) {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                while (reader.readLine() != null) count++;
+            } catch (Throwable ignored) { }
         }
-        local.add(Calendar.DAY_OF_YEAR, 1);
-        return new File(dir, FILE_PREFIX + dateKey(local.getTime()) + "-s1330" + FILE_SUFFIX);
+        SEGMENT_COUNTS.put(path, count);
+        return count;
     }
 
     private static void incrementDropped(Context context, String kind) {
@@ -958,8 +993,6 @@ final class LauncherDiagnostics {
         HttpURLConnection connection = null;
         try {
             JSONArray events = new JSONArray();
-            List<JSONObject> priorityEvents = new ArrayList<>();
-            List<JSONObject> lowPriorityEvents = new ArrayList<>();
             int totalLines = 0;
             int invalidLines = 0;
             String firstTs = "";
@@ -975,13 +1008,12 @@ final class LauncherDiagnostics {
                             String ts = event.optString("ts", "");
                             if (firstTs.isEmpty()) firstTs = ts;
                             lastTs = ts;
-                            if ("app_launch".equals(event.optString("event", ""))) {
-                                if (lowPriorityEvents.size() < 40) {
-                                    lowPriorityEvents.add(event);
-                                }
-                            } else if (priorityEvents.size() < MAX_UPLOAD_EVENTS) {
-                                priorityEvents.add(event);
+                            if (events.length() >= MAX_UPLOAD_EVENTS) {
+                                // Never silently archive a partial segment and
+                                // delete its untransmitted records.
+                                return UPLOAD_FAILED;
                             }
+                            events.put(event);
                         } catch (Throwable ignored) {
                             invalidLines++;
                         }
@@ -989,15 +1021,10 @@ final class LauncherDiagnostics {
                 }
             }
 
-            for (JSONObject event : priorityEvents) {
-                if (events.length() >= MAX_UPLOAD_EVENTS) break;
-                events.put(event);
+            if (invalidLines > 0 || events.length() != totalLines) {
+                // Invalid JSONL remains on-device for repair/manual analysis.
+                return UPLOAD_FAILED;
             }
-            for (JSONObject event : lowPriorityEvents) {
-                if (events.length() >= MAX_UPLOAD_EVENTS) break;
-                events.put(event);
-            }
-
             if (events.length() == 0) {
                 // Even a damaged/non-parsable log must be retained until
                 // its contents can be inspected or repaired.
@@ -1103,7 +1130,9 @@ final class LauncherDiagnostics {
         String suffix = name.contains("-s1330") ? "s1330"
                 : name.contains("-s2130") ? "s2130"
                 : name.contains("-late") ? "late" : "main";
-        return sha256Hex(deviceKey + "|" + date + "|" + suffix + "|" + file.length())
+        String unique = file.getName().matches(".*-p[0-9]{3}\\.jsonl$")
+                ? file.getName() : suffix;
+        return sha256Hex(deviceKey + "|" + date + "|" + unique + "|" + file.length())
                 .substring(0, 32);
     }
 
@@ -1172,6 +1201,7 @@ final class LauncherDiagnostics {
         synchronized (FILE_LOCK) {
             markSent(file);
             if (file.delete() || !file.exists()) {
+                SEGMENT_COUNTS.remove(file.getAbsolutePath());
                 clearRetry(file);
                 closedMarker(file).delete();
                 bufferedMarker(file).delete();
