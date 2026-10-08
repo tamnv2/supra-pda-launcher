@@ -60,6 +60,7 @@ final class LauncherDiagnostics {
     private static final String LATE_SUFFIX = "-late.jsonl";
     private static final long SAMPLE_INTERVAL_MS = 15L * 60L * 1000L;
     private static final long FULL_SAMPLE_INTERVAL_MS = 60L * 60L * 1000L;
+    private static final long DT50_FULL_SAMPLE_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final long MIN_UPLOAD_CHECK_INTERVAL_MS = 60L * 1000L;
     private static final long MAX_REGULAR_LOG_BYTES = 118_000L;
     private static final long MAX_CRITICAL_LOG_BYTES = 138_000L;
@@ -227,7 +228,8 @@ final class LauncherDiagnostics {
                 long lastSample = prefs.getLong("last_sample_at", 0L);
                 if (lastSample <= 0L || now - lastSample >= SAMPLE_INTERVAL_MS) {
                     long lastFull = prefs.getLong("last_full_sample_at", 0L);
-                    boolean full = lastFull <= 0L || now - lastFull >= FULL_SAMPLE_INTERVAL_MS;
+                    long fullInterval = isDt50() ? DT50_FULL_SAMPLE_INTERVAL_MS : FULL_SAMPLE_INTERVAL_MS;
+                    boolean full = lastFull <= 0L || now - lastFull >= fullInterval;
                     JSONObject data = new JSONObject();
                     JSONObject batterySample = captureBattery(context, null, full);
                     data.put("battery", batterySample);
