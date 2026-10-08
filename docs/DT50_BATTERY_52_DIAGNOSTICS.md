@@ -4,8 +4,8 @@
 
 Chỉ bổ sung đọc và ghi log. **Chưa thay nguồn phần trăm pin trên màn hình Launcher**, không sửa cảnh báo pin yếu hay logic sạc. Không thay đổi API, tần suất upload, quyền Android hoặc lập lịch JobScheduler.
 
-- Mỗi mẫu log 15 phút đang có: ghi `ACTION_BATTERY_CHANGED`, `BatteryManager`, dữ liệu pin sysfs gọn trên dòng DT50 và so sánh phần trăm giữa các nguồn.
-- Mỗi giờ và khi khởi chạy: giữ mẫu sysfs/dumpsys chi tiết hiện có, bổ sung các trường điện áp và thời gian sạc/xả (nếu firmware cấp).
+- Mỗi mẫu log khoảng 15 phút đang có: ghi `ACTION_BATTERY_CHANGED`, `BatteryManager`, dữ liệu pin sysfs gọn trên dòng DT50 và so sánh phần trăm giữa các nguồn.
+- Mỗi 3 giờ với DT50 và khi khởi chạy: giữ mẫu sysfs/dumpsys chi tiết, bổ sung trường điện áp/dung lượng (nếu firmware cấp); các máy khác giữ chu kỳ khoảng 1 giờ.
 - `battery_trend`: thời gian % không đổi, mức thay đổi điện áp tính bằng mV, việc đổi trạng thái sạc khi % vẫn giữ nguyên. `possible_stale_percentage` chỉ là **nghi vấn**, không phải đo được % pin thực tế.
 - `source_comparison`: `broadcast_percent`, `manager_percent`, `sysfs_percent` (khi đọc được), `sources_disagree`. `independent_accuracy_verified=false` để tránh dùng nhầm số liệu tương quan thành thẩm định chính xác.
 - File log ở local, dùng chung gói gửi một lần trong cửa sổ cuối ngày và cơ chế retry của Launcher. Không gửi mới sau mỗi mẫu 15 phút.
@@ -45,7 +45,7 @@ Phần trăm pin là ước lượng do bộ quản lý năng lượng cung cấ
 | Diễn tiến | số phút % đứng yên, đổi cắm/rút sạc, khoảng biến động điện áp, thay đổi charge counter, nghi vấn pin đứng 52% |
 | Firmware DT50 | build ID, display, incremental, board, model, hardware; không thu IMEI/MEID/serial thô |
 
-Đã giới hạn thời gian gọi dumpsys battery để tránh làm treo hàng đợi log. Không thêm API request, quyền hệ thống hay lịch polling mới. Giữ chu kỳ lấy mẫu khoảng 15 phút (do JobScheduler có thể trễ), mẫu đầy đủ khoảng mỗi giờ và upload dồn trong cửa sổ 21:55–22:00 (giờ Việt Nam).
+Đã giới hạn thời gian gọi dumpsys battery để tránh làm treo hàng đợi log. Không thêm API request, quyền hệ thống hay lịch polling mới. Giữ chu kỳ lấy mẫu khoảng 15 phút (do JobScheduler có thể trễ), mẫu đầy đủ khoảng mỗi 3 giờ trên DT50 (các máy khác giữ 1 giờ) và upload dồn trong cửa sổ 21:55–22:00 (giờ Việt Nam).
 
 Luồng truyền hiện tại: Launcher lưu log local -> inventory-beta.supra.cc.cd/api/pda/launcher/logs -> Inventory service lưu tạm và archive qua Google Drive -> Logs/YYYY-MM-DD. Trên Drive tìm file có tên tiền tố scheduled_android_launcher-, xem reason launcher_daily_diagnostic và model DT50. Nếu không thấy, kiểm tra cả hai thư mục cùng tên ngày vì Drive hiện còn tình trạng trùng thư mục. Không ghi nhận dữ liệu nhạy cảm hay đánh giá % pin thật bằng công thức từ điện áp.
 
