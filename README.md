@@ -22,8 +22,10 @@ Custom Android Launcher dành cho PDA kho SUPRA.
 ## Build
 
 GitHub Actions:
-- `build.yml`: build APK kiểm thử cho push/PR.
-- `release.yml`: build APK release đã ký, kiểm tra chữ ký, tạo SHA-256 và phát hành GitHub Release khi push tag `v*` hoặc chạy thủ công từ tab Actions.
+- `build.yml`: build APK kiểm thử và kiểm tra quy tắc duyệt phiên bản/phạm vi cho push/PR.
+- `release.yml`: **chỉ phát hành thủ công bởi tài khoản GitHub owner `tamnv2`**. Mỗi phiên bản mới phải được owner duyệt phạm vi `ALL`, `MODEL` hoặc `DEVICE` cụ thể. Push/tag/chỉnh `release/version.txt` không tự phát hành.
+- Phiên bản `v0.3.25` vẫn là nền tảng chung. Từ `v0.3.26`, GitHub Release chỉ chứa APK đã ký và biên nhận phạm vi owner duyệt; cập nhật trên máy chỉ được kích hoạt bởi chính sách backend ROOT trùng hoàn toàn với phạm vi đó.
+- Hướng dẫn chi tiết: [Quy định owner duyệt phạm vi cập nhật](docs/OWNER_RELEASE_SCOPE_POLICY.md).
 
 > Không commit keystore hoặc mật khẩu ký APK vào repository.
 
