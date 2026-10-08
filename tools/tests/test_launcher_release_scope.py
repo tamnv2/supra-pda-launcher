@@ -72,6 +72,20 @@ class ReleaseScopeTests(unittest.TestCase):
         self.assert_blocked("VERSION_CODE_OVERLAP",
                             version="0.3.100", confirmation="DUYET 0.3.100 ALL")
 
+    def test_workflow_cannot_auto_publish_and_never_mutates_fleet_channel(self):
+        workflow = (pathlib.Path(__file__).resolve().parents[2]
+                    / ".github/workflows/release.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("environment: launcher-production", workflow)
+        self.assertIn("Verify explicit owner identity", workflow)
+        self.assertIn("launcher_release_owner_gate.py", workflow)
+        self.assertIn("owner_confirmation:", workflow)
+        self.assertNotIn("\\n  push:", workflow)
+        self.assertNotIn("Publish fixed Launcher update channel", workflow)
+        self.assertNotIn("--clobber", workflow.split("gh release create", 1)[-1])
+        self.assertIn("launcher-rollout-receipt.json", workflow)
+        self.assertIn("ROLLOUT_DEVICE_KEYS:", workflow)
+
     def test_scope_digest_tamper_protection(self):
         a = valid(scope="DEVICE", devices=f"{KEY1},{KEY2}",
                   confirmation="DUYET 0.3.26 DEVICE")
