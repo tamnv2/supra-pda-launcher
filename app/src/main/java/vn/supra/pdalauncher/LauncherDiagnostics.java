@@ -69,6 +69,10 @@ final class LauncherDiagnostics {
     private static final int JOB_ID = 12910323;
     private static final int UPLOAD_JOB_ID = 12910330;
     private static final int DRAIN_JOB_ID = 12910331;
+    private static final int UPLOAD_FAILED = 0;
+    private static final int UPLOAD_BUFFERED = 1;
+    private static final int UPLOAD_DRIVE_SYNCED = 2;
+    private static final int RECEIPT_MISSING = 3;
     private static final long JOB_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final TimeZone VN_TZ = TimeZone.getTimeZone("Asia/Ho_Chi_Minh");
     private static final long[] RETRY_DELAYS_MS = new long[] {
@@ -899,36 +903,57 @@ final class LauncherDiagnostics {
                 if (!retryDue(file)) continue;
 
                 closeForUpload(file);
-                boolean success = uploadFile(context, file, deviceKey, date);
-                if (success) {
-                    markSent(file);
-                    clearRetry(file);
-                    uploaded++;
-                    // Respect the server's 30-second per-device limit. One-shot
-                    // follow-up jobs are created only when there is an actual
-                    // backlog; never poll for log delivery.
-                    for (File candidate : files) {
-                        if (!candidate.equals(file) && !sentMarker(candidate).exists()
-                                && !candidate.getName().equals(file.getName())
-                                && isUploadDue(deviceKey, candidate)) {
-                            scheduleDeferredDrain(context, 45_000L);
-                            break;
-                        }
+                int result = UPLOAD_FAILED;
+                File buffered = bufferedMarker(file);
+                if (buffered.isFile()) {
+                    result = checkDriveArchiveReceipt(file, deviceKey);
+                    if (result == RECEIPT_MISSING) {
+                        // The server no longer has the buffer (e.g. retention).
+                        // Resend once with the same immutable, closed file.
+                        buffered.delete();
+                    } else if (result == UPLOAD_DRIVE_SYNCED) {
+                        deleteAfterDriveReceipt(file);
+                        uploaded++;
+                    } else if (result == UPLOAD_BUFFERED) {
+                        // No repetitive POST and no frequent status polling:
+                        // check again at the next pre-existing upload window.
+                        clearRetry(file);
+                    } else {
+                        scheduleRetry(file);
                     }
-                    break;
+                    if (result != RECEIPT_MISSING) {
+                        if (result == UPLOAD_DRIVE_SYNCED) scheduleNextQueuedFile(context, files, file, deviceKey);
+                        break;
+                    }
+                }
+
+                result = uploadFile(context, file, deviceKey, date);
+                if (result == UPLOAD_DRIVE_SYNCED) {
+                    deleteAfterDriveReceipt(file);
+                    uploaded++;
+                    scheduleNextQueuedFile(context, files, file, deviceKey);
+                } else if (result == UPLOAD_BUFFERED) {
+                    // Durable server buffer received but the Google Drive copy
+                    // may not exist. Persist receipt identity; keep the data.
+                    try {
+                        String bundleId = bundleIdFor(file, deviceKey, date);
+                        markBuffered(file, bundleId);
+                        clearRetry(file);
+                    } catch (Throwable ignored) {
+                        scheduleRetry(file);
+                    }
                 } else {
                     scheduleRetry(file);
-                    // Exponential backoff is persisted beside the file.
-                    scheduleDeferredDrain(context, RETRY_DELAYS_MS[0] + 60_000L);
-                    break;
+                    scheduleDeferredDrain(context, nextRetryDelay(file));
                 }
+                break;
             }
         } finally {
             UPLOAD_IN_FLIGHT.set(false);
         }
     }
 
-    private static boolean uploadFile(
+    private static int uploadFile(
             Context context, File file, String deviceKey, String date) {
         HttpURLConnection connection = null;
         try {
@@ -974,8 +999,9 @@ final class LauncherDiagnostics {
             }
 
             if (events.length() == 0) {
-                markSent(file);
-                return true;
+                // Even a damaged/non-parsable log must be retained until
+                // its contents can be inspected or repaired.
+                return UPLOAD_FAILED;
             }
 
             String suffix = file.getName().contains("-s1330") ? "s1330"
@@ -1021,8 +1047,7 @@ final class LauncherDiagnostics {
             body.put("reason", suffix.equals("late")
                     ? "launcher_daily_diagnostic_late"
                     : "launcher_daily_diagnostic");
-            body.put("bundle_id", sha256Hex(
-                    deviceKey + "|" + date + "|" + suffix + "|" + file.length()).substring(0, 32));
+            body.put("bundle_id", bundleIdFor(file, deviceKey, date));
             body.put("boundary_id",
                     "launcher:" + deviceKey.substring(0, 16).toLowerCase(Locale.US)
                             + ":" + date + ":" + suffix);
@@ -1031,7 +1056,7 @@ final class LauncherDiagnostics {
             body.put("payload", payload);
 
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > 155_000) return false;
+            if (bytes.length > 155_000) return UPLOAD_FAILED;
 
             connection = (HttpURLConnection) new URL(API_URL).openConnection();
             connection.setRequestMethod("POST");
@@ -1051,11 +1076,117 @@ final class LauncherDiagnostics {
             }
 
             int code = connection.getResponseCode();
-            return code >= 200 && code < 300;
+            if (code != 200 && code != 202) return UPLOAD_FAILED;
+            JSONObject reply;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder data = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null && data.length() < 4096) data.append(line);
+                reply = new JSONObject(data.toString());
+            }
+            if (reply.optBoolean("archived", false)
+                    && "DRIVE_SYNCED".equals(reply.optString("archive_status", ""))) {
+                return UPLOAD_DRIVE_SYNCED;
+            }
+            if ("BUFFERED".equals(reply.optString("status", ""))) return UPLOAD_BUFFERED;
+            return UPLOAD_FAILED;
         } catch (Throwable ignored) {
-            return false;
+            return UPLOAD_FAILED;
         } finally {
             if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static String bundleIdFor(File file, String deviceKey, String date) throws Exception {
+        String name = file.getName();
+        String suffix = name.contains("-s1330") ? "s1330"
+                : name.contains("-s2130") ? "s2130"
+                : name.contains("-late") ? "late" : "main";
+        return sha256Hex(deviceKey + "|" + date + "|" + suffix + "|" + file.length())
+                .substring(0, 32);
+    }
+
+    private static void scheduleNextQueuedFile(
+            Context context, File[] files, File completed, String deviceKey) {
+        for (File candidate : files) {
+            if (!candidate.equals(completed)
+                    && !sentMarker(candidate).exists()
+                    && isUploadDue(deviceKey, candidate)) {
+                // Keep server's existing 30-second device throttle intact.
+                scheduleDeferredDrain(context, 45_000L);
+                return;
+            }
+        }
+    }
+
+    private static File bufferedMarker(File file) {
+        return new File(file.getParentFile(), file.getName() + ".buffered");
+    }
+
+    private static void markBuffered(File file, String bundleId) {
+        synchronized (FILE_LOCK) {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(bufferedMarker(file), false))) {
+                writer.write(bundleId);
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    private static int checkDriveArchiveReceipt(File file, String deviceKey) {
+        HttpURLConnection connection = null;
+        try {
+            String bundleId;
+            try (BufferedReader reader = new BufferedReader(new FileReader(bufferedMarker(file)))) {
+                bundleId = reader.readLine();
+            }
+            if (bundleId == null || !bundleId.matches("[0-9a-f]{32,64}")) return RECEIPT_MISSING;
+            String url = API_URL + "/status?device_key=" + deviceKey + "&bundle_id=" + bundleId;
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setConnectTimeout(6000);
+            connection.setReadTimeout(9000);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("x-supra-launcher-log-version", "1");
+            int code = connection.getResponseCode();
+            if (code == 404) return RECEIPT_MISSING;
+            if (code != 200) return UPLOAD_FAILED;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder raw = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null && raw.length() < 4096) raw.append(line);
+                JSONObject receipt = new JSONObject(raw.toString());
+                return receipt.optBoolean("archived", false)
+                        && "DRIVE_SYNCED".equals(receipt.optString("status", ""))
+                        ? UPLOAD_DRIVE_SYNCED : UPLOAD_BUFFERED;
+            }
+        } catch (Throwable ignored) {
+            return UPLOAD_FAILED;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static void deleteAfterDriveReceipt(File file) {
+        // Write local receipt before deletion so interruption cannot
+        // accidentally cause a second full upload.
+        synchronized (FILE_LOCK) {
+            markSent(file);
+            if (file.delete() || !file.exists()) {
+                clearRetry(file);
+                closedMarker(file).delete();
+                bufferedMarker(file).delete();
+                sentMarker(file).delete();
+            }
+        }
+    }
+
+    private static long nextRetryDelay(File file) {
+        File marker = retryMarker(file);
+        try (BufferedReader reader = new BufferedReader(new FileReader(marker))) {
+            String[] parts = reader.readLine().split(",");
+            return Math.max(60_000L, Long.parseLong(parts[1]) - System.currentTimeMillis());
+        } catch (Throwable ignored) {
+            return 15L * 60L * 1000L;
         }
     }
 
