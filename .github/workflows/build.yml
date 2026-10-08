@@ -29,6 +29,9 @@ jobs:
       - name: Launcher v0.3.25 safety regression
         run: python3 tools/launcher_325_regression_guard.py
 
+      - name: Validate owner-only future Launcher release scope
+        run: python3 -m unittest discover -s tools/tests -p 'test_launcher_release_scope.py' -v
+
       - name: Build debug and release variants
         run: gradle :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace
 
