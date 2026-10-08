@@ -44,6 +44,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -271,6 +272,13 @@ final class LauncherDiagnostics {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             build.put("security_patch", safeText(Build.VERSION.SECURITY_PATCH, 40));
         }
+        if (isDt50()) {
+            // Identify firmware variants without logging IMEI, serial or MEID.
+            build.put("build_id", safeText(Build.ID, 80));
+            build.put("firmware_display", safeText(Build.DISPLAY, 120));
+            build.put("firmware_incremental", safeText(Build.VERSION.INCREMENTAL, 120));
+            build.put("board", safeText(Build.BOARD, 80));
+        }
         result.put("build", build);
 
         JSONObject launcher = new JSONObject();
@@ -351,6 +359,7 @@ final class LauncherDiagnostics {
 
         JSONObject out = new JSONObject();
         out.put("capture_uptime_ms", SystemClock.elapsedRealtime());
+        if (isDt50()) out.put("diagnostic_schema", "dt50-battery-v2");
         if (battery != null) {
             int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
@@ -419,6 +428,7 @@ final class LauncherDiagnostics {
             String dumpsys = readCommand(
                     new String[] { "/system/bin/dumpsys", "battery" }, 5000);
             if (!dumpsys.isEmpty()) out.put("dumpsys_battery", dumpsys);
+            out.put("dumpsys_battery_available", !dumpsys.isEmpty());
         }
         // Lightweight local-only probe on DT50. No new HTTP requests or polling jobs.
         if (isDt50()) out.put("dt50_sysfs_probe", readDt50BatteryProbe());
@@ -489,10 +499,12 @@ final class LauncherDiagnostics {
         int readable = 0;
         String[] fields = new String[] {
                 "type", "capacity", "capacity_level", "status", "health",
-                "present", "voltage_now", "voltage_avg", "voltage_ocv",
+                "present", "online", "voltage_now", "voltage_avg",
+                "voltage_ocv", "voltage_min_design", "voltage_max_design",
                 "current_now", "current_avg", "charge_now", "charge_full",
-                "charge_counter", "energy_now", "energy_full", "temp",
-                "time_to_empty_now", "time_to_full_now"
+                "charge_full_design", "charge_counter", "energy_now",
+                "energy_full", "energy_full_design", "cycle_count",
+                "charge_type", "temp", "time_to_empty_now", "time_to_full_now"
         };
         for (File supply : supplies) {
             if (!supply.isDirectory()) continue;
@@ -588,26 +600,51 @@ final class LauncherDiagnostics {
         int priorLevel = prefs.getInt("dt50_probe_level", -1);
         long since = prefs.getLong("dt50_probe_since", 0L);
         int firstVoltage = prefs.getInt("dt50_probe_voltage_mv", -1);
+        int voltageMin = prefs.getInt("dt50_probe_voltage_min_mv", -1);
+        int voltageMax = prefs.getInt("dt50_probe_voltage_max_mv", -1);
+        JSONObject properties = sample.optJSONObject("properties");
+        int counter = properties == null ? -1
+                : properties.optInt("charge_counter_uah", -1);
+        int firstCounter = prefs.getInt("dt50_probe_counter_uah", -1);
         int firstPlugged = prefs.getInt("dt50_probe_plugged", -1);
         boolean plugChanged = prefs.getBoolean("dt50_probe_plug_changed", false);
         if (level != priorLevel || since <= 0L || since > now) {
             since = now;
             firstVoltage = voltage;
+            voltageMin = voltage;
+            voltageMax = voltage;
+            firstCounter = counter;
             firstPlugged = plugged;
             plugChanged = false;
         } else if (plugged >= 0 && firstPlugged >= 0 && plugged != firstPlugged) {
             plugChanged = true;
         }
+        if (voltage > 0) {
+            voltageMin = voltageMin > 0 ? Math.min(voltageMin, voltage) : voltage;
+            voltageMax = voltageMax > 0 ? Math.max(voltageMax, voltage) : voltage;
+        }
         prefs.edit().putInt("dt50_probe_level", level)
                 .putLong("dt50_probe_since", since)
                 .putInt("dt50_probe_voltage_mv", firstVoltage)
+                .putInt("dt50_probe_voltage_min_mv", voltageMin)
+                .putInt("dt50_probe_voltage_max_mv", voltageMax)
+                .putInt("dt50_probe_counter_uah", firstCounter)
                 .putInt("dt50_probe_plugged", firstPlugged)
                 .putBoolean("dt50_probe_plug_changed", plugChanged)
                 .apply();
 
         long unchangedMinutes = Math.max(0L, (now - since) / 60000L);
         trend.put("reported_level_percent", level);
+        trend.put("reported_52_percent", level == 52);
         trend.put("unchanged_minutes", unchangedMinutes);
+        if (voltageMin > 0 && voltageMax >= voltageMin) {
+            trend.put("voltage_min_mv", voltageMin);
+            trend.put("voltage_max_mv", voltageMax);
+            trend.put("voltage_span_mv", voltageMax - voltageMin);
+        }
+        if (counter >= 0 && firstCounter >= 0) {
+            trend.put("charge_counter_delta_uah", (long) counter - firstCounter);
+        }
         trend.put("plug_state_changed_while_level_unchanged", plugChanged);
         int voltageDelta = voltage > 0 && firstVoltage > 0
                 ? voltage - firstVoltage : Integer.MIN_VALUE;
@@ -615,8 +652,10 @@ final class LauncherDiagnostics {
             trend.put("voltage_delta_mv", voltageDelta);
         }
         boolean suspicious = unchangedMinutes >= 60
-                && (plugChanged || (voltageDelta != Integer.MIN_VALUE
-                && Math.abs(voltageDelta) >= 150));
+                && (plugChanged || (voltageMin > 0 && voltageMax > 0
+                && voltageMax - voltageMin >= 150)
+                || (counter >= 0 && firstCounter >= 0
+                && Math.abs((long) counter - firstCounter) >= 50000));
         trend.put("possible_stale_percentage", suspicious);
         trend.put("estimated_actual_percentage", JSONObject.NULL);
         return trend;
@@ -635,29 +674,32 @@ final class LauncherDiagnostics {
     }
 
     private static String readCommand(String[] command, int maxChars) {
-        BufferedReader reader = null;
+        // Limit diagnostics so a vendor command cannot block the upload queue forever.
+        Process process = null;
         try {
-            Process process = Runtime.getRuntime().exec(command);
-            reader = new BufferedReader(new InputStreamReader(
-                    process.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null && out.length() < maxChars) {
-                if (line.toLowerCase(Locale.US).contains("serial")) continue;
-                out.append(line).append('\n');
+            process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            boolean completed = process.waitFor(1800, TimeUnit.MILLISECONDS);
+            if (!completed) {
+                process.destroyForcibly();
+                return "";
             }
-            try {
-                process.waitFor();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while (out.length() < maxChars && (line = reader.readLine()) != null) {
+                    if (line.toLowerCase(Locale.US).contains("serial")) continue;
+                    out.append(line).append('\n');
+                }
             }
             return safeText(out.toString(), maxChars);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return "";
         } catch (Throwable ignored) {
             return "";
         } finally {
-            if (reader != null) {
-                try { reader.close(); } catch (Throwable ignored) { }
-            }
+            if (process != null) process.destroy();
         }
     }
 
