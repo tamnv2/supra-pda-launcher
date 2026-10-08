@@ -83,6 +83,7 @@ public class MainActivity extends Activity {
         @Override public void onReceive(Context context, Intent intent) {
             updateClock();
             refreshTimeState();
+            LauncherDiagnostics.onSystemClockOrBoot(context);
         }
     };
 
