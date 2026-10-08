@@ -1,17 +1,32 @@
-name: Release APK
+name: Release APK (Owner scope approval required)
 
+# Deliberately NO push and NO tag triggers. Updating release/version.txt or
+# tagging a commit must never silently create a release or change PDA scope.
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-    paths:
-      - 'release/version.txt'
   workflow_dispatch:
     inputs:
       version:
-        description: Version without v prefix, for example 0.3.0
+        description: "Next version e.g. 0.3.26 (must be newer than 0.3.25)"
+        required: true
+        type: string
+      rollout_scope:
+        description: "Owner decision: ALL, MODEL, or DEVICE"
+        required: true
+        type: choice
+        options:
+          - ALL
+          - MODEL
+          - DEVICE
+      rollout_models:
+        description: "MODEL only: comma-separated exact Registry models, e.g. DT50 or NLS-MT90"
+        required: false
+        type: string
+      rollout_device_keys:
+        description: "DEVICE only: comma-separated 64-character registered DeviceKeys, NEVER raw Serial/MEID"
+        required: false
+        type: string
+      owner_confirmation:
+        description: "Type DUYET <version> <scope> (e.g. DUYET 0.3.26 MODEL)"
         required: true
         type: string
 
@@ -19,16 +34,48 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: launcher-owner-release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Configure required reviewer tamnv2 for this Environment in GitHub
+    # Settings -> Environments. The workflow ALSO verifies github.actor.
+    environment: launcher-production
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify explicit owner identity, scope and exact version BEFORE signing
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          ROLLOUT_SCOPE: ${{ inputs.rollout_scope }}
+          ROLLOUT_MODELS: ${{ inputs.rollout_models }}
+          ROLLOUT_DEVICE_KEYS: ${{ inputs.rollout_device_keys }}
+          OWNER_CONFIRMATION: ${{ inputs.owner_confirmation }}
+        run: |
+          set -euo pipefail
+          python3 tools/launcher_release_owner_gate.py \
+            --output dist/launcher-rollout-approval.private.json
+
+      - name: Refuse republishing existing version or tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Release already exists. New owner approval required for a different version."
+            exit 1
+          fi
+          if git ls-remote --tags --exit-code origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${VERSION} already exists; refusing to overwrite a signed release."
+            exit 1
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -43,13 +90,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(tr -d '[:space:]' < release/version.txt)"
-          fi
+          VERSION="${{ inputs.version }}"
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version must match x.y.z"
@@ -101,72 +142,34 @@ jobs:
           cp "$SRC" "$APK"
           sha256sum "$APK" > "$APK.sha256"
 
-      - name: Publish GitHub Release
+      - name: Stamp signed APK SHA and create privacy-safe owner receipt
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          APK="dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"
+          set -euo pipefail
+          python3 tools/launcher_release_owner_gate.py \
+            --finalize dist/launcher-rollout-approval.private.json \
+            --apk "dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk" \
+            --receipt dist/launcher-rollout-receipt.json
+          echo "Owner approved artifact signing. PDA targeting is NOT active until"
+          echo "the Inventory ROOT API applies the matching approved scope."
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
-          else
-            gh release create "$TAG" "$APK" "$APK.sha256" \
-              --target "${{ github.sha }}" \
-              --title "SUPRA PDA Launcher $TAG" \
-              --generate-notes
-          fi
-
-      # Foundation rollout only. Future releases must be targeted via the
-      # policy manifest and must not silently update the fleet-wide channel.
-      - name: Publish fixed Launcher update channel
-        if: steps.version.outputs.version == '0.3.25'
+      - name: Publish GitHub Release (no automatic PDA rollout)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_CODE="${{ steps.version.outputs.version_code }}"
           TAG="${{ steps.version.outputs.tag }}"
-          SOURCE="${{ github.sha }}"
-          SRC="dist/SUPRA-PDA-Launcher-v${VERSION}.apk"
-          CHANNEL_APK="dist/SUPRA-PDA-Launcher-latest.apk"
-          CHANNEL_SHA="${CHANNEL_APK}.sha256"
-          CHANNEL_JSON="dist/launcher-latest.json"
+          APK="dist/SUPRA-PDA-Launcher-v${{ steps.version.outputs.version }}.apk"
 
-          cp "$SRC" "$CHANNEL_APK"
-          SHA256="$(sha256sum "$CHANNEL_APK" | awk '{print $1}')"
-          SIZE_BYTES="$(stat -c%s "$CHANNEL_APK")"
-          printf '%s  %s\n' "$SHA256" "$(basename "$CHANNEL_APK")" > "$CHANNEL_SHA"
-
-          jq -n \
-            --arg version "$VERSION" \
-            --argjson version_code "$VERSION_CODE" \
-            --arg tag "$TAG" \
-            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg source "$SOURCE" \
-            --argjson size_bytes "$SIZE_BYTES" \
-            --arg sha256 "$SHA256" \
-            '{
-              version: $version,
-              version_code: $version_code,
-              tag: $tag,
-              published_at: $published_at,
-              source: $source,
-              size_bytes: $size_bytes,
-              sha256: $sha256
-            }' > "$CHANNEL_JSON"
-
-          CHANNEL_TAG="launcher-channel"
-          if gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
-            gh release upload "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" --clobber
-            gh release edit "$CHANNEL_TAG" --prerelease
-          else
-            gh release create "$CHANNEL_TAG" "$CHANNEL_APK" "$CHANNEL_SHA" "$CHANNEL_JSON" \
-              --target "${{ github.sha }}" \
-              --title "SUPRA PDA Launcher Update Channel" \
-              --notes "Fixed asset channel consumed by inventory-beta.supra.cc.cd. Do not delete while Launcher auto-update is active." \
-              --prerelease
+          # Refuse replacing even a concurrent/partially created release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release already exists; never --clobber a signed owner-approved APK."
+            exit 1
           fi
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            "dist/launcher-rollout-receipt.json" \
+            --target "${{ github.sha }}" \
+            --title "SUPRA PDA Launcher $TAG (scope: ${{ inputs.rollout_scope }})" \
+            --notes "Owner tamnv2 approved scope ${{ inputs.rollout_scope }} for $TAG. Signed APK published only; PDA rollout requires a separate matching authenticated Inventory ROOT policy. The global launcher-channel remains pinned to foundation v0.3.25." \
+            --latest=false
