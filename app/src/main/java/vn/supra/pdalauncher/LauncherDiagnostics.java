@@ -576,6 +576,8 @@ final class LauncherDiagnostics {
     }
 
 
+    static boolean isDt50Device() { return isDt50(); }
+
     private static boolean isDt50() {
         String identity = (Build.MANUFACTURER + " " + Build.MODEL + " "
                 + Build.DEVICE + " " + Build.PRODUCT).toUpperCase(Locale.US);
