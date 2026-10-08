@@ -825,14 +825,29 @@ final class LauncherDiagnostics {
     }
 
     private static File activeLogFile(Context context) {
-        String date = vietnamDateKey();
+        // Rotate by *scheduled time* even when no network is available.
+        // Two independent files per operational day; writes after the evening
+        // window are retained for the following morning.
+        String today = vietnamDateKey();
+        String key = Prefs.getRegistryDeviceKey(context);
+        if (key == null || key.isEmpty()) key = "unregistered-" + Build.MODEL;
+        Calendar local = Calendar.getInstance(VN_TZ);
+        int minute = local.get(Calendar.HOUR_OF_DAY) * 60 + local.get(Calendar.MINUTE);
         File dir = logDir(context);
-        File main = new File(dir, FILE_PREFIX + date + FILE_SUFFIX);
-        File sent = sentMarker(main);
-        if (sent.exists() || closedMarker(main).exists()) {
-            return new File(dir, FILE_PREFIX + date + LATE_SUFFIX);
+        File first = new File(dir, FILE_PREFIX + today + "-s1330" + FILE_SUFFIX);
+        if (minute >= slotMinute(key, today, 13 * 60 + 30)) {
+            if (first.isFile() && !closedMarker(first).exists()) closeForUpload(first);
+        } else if (!closedMarker(first).exists() && !sentMarker(first).exists()) {
+            return first;
         }
-        return main;
+        File second = new File(dir, FILE_PREFIX + today + "-s2130" + FILE_SUFFIX);
+        if (minute >= slotMinute(key, today, 21 * 60 + 30)) {
+            if (second.isFile() && !closedMarker(second).exists()) closeForUpload(second);
+        } else if (!closedMarker(second).exists() && !sentMarker(second).exists()) {
+            return second;
+        }
+        local.add(Calendar.DAY_OF_YEAR, 1);
+        return new File(dir, FILE_PREFIX + dateKey(local.getTime()) + "-s1330" + FILE_SUFFIX);
     }
 
     private static void incrementDropped(Context context, String kind) {
@@ -863,11 +878,7 @@ final class LauncherDiagnostics {
                 if (sentMarker(file).exists()) continue;
                 String date = dateFromFile(file);
                 if (date.isEmpty()) continue;
-                if (file.getName().contains("-late")
-                        && date.equals(vietnamDateKey())) {
-                    continue;
-                }
-                if (!isUploadDue(deviceKey, date)) continue;
+                if (!isUploadDue(deviceKey, file)) continue;
                 if (!retryDue(file)) continue;
 
                 closeForUpload(file);
@@ -936,7 +947,9 @@ final class LauncherDiagnostics {
                 return true;
             }
 
-            String suffix = file.getName().contains("-late") ? "late" : "main";
+            String suffix = file.getName().contains("-s1330") ? "s1330"
+                    : file.getName().contains("-s2130") ? "s2130"
+                    : file.getName().contains("-late") ? "late" : "main";
             JSONObject summary = new JSONObject();
             summary.put("event_count_uploaded", events.length());
             summary.put("event_count_total", totalLines);
@@ -952,7 +965,7 @@ final class LauncherDiagnostics {
 
             JSONObject payload = new JSONObject();
             payload.put("date", date);
-            payload.put("upload_window", uploadWindow(deviceKey));
+            payload.put("upload_window", uploadWindow(deviceKey, date, suffix));
             payload.put("summary", summary);
             payload.put("events", events);
 
@@ -1015,32 +1028,26 @@ final class LauncherDiagnostics {
         }
     }
 
-    private static boolean isUploadDue(String deviceKey, String fileDate) {
+    private static boolean isUploadDue(String deviceKey, File file) {
+        String date = dateFromFile(file);
         String today = vietnamDateKey();
-        int compare = fileDate.compareTo(today);
-        if (compare < 0) return true;
-        if (compare > 0) return false;
-
+        int comparison = date.compareTo(today);
+        if (comparison < 0) return true;
+        if (comparison > 0) return false;
+        // Never send an unfinished segment early, even on Launcher relaunch.
+        String filename = file.getName();
+        if (filename.contains("-late")) return false; // Legacy late logs: tomorrow.
+        int base = filename.contains("-s1330") ? 13 * 60 + 30 : 21 * 60 + 30;
         Calendar calendar = Calendar.getInstance(VN_TZ);
-        int minutes = calendar.get(Calendar.HOUR_OF_DAY) * 60
-                + calendar.get(Calendar.MINUTE);
-        return minutes >= targetUploadMinute(deviceKey);
+        int nowMinute = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE);
+        return nowMinute >= slotMinute(deviceKey, today, base);
     }
 
-    private static int targetUploadMinute(String deviceKey) {
-        int hash;
-        try {
-            hash = (int) (Long.parseLong(deviceKey.substring(0, 8), 16) & 0x7fffffffL);
-        } catch (Throwable ignored) {
-            hash = Math.abs(deviceKey.hashCode());
-        }
-        return 21 * 60 + 55 + (hash % 6);
-    }
-
-    private static String uploadWindow(String deviceKey) {
-        int minuteOfDay = targetUploadMinute(deviceKey);
+    private static String uploadWindow(String deviceKey, String date, String suffix) {
+        int base = "s1330".equals(suffix) ? 13 * 60 + 30 : 21 * 60 + 30;
+        int minute = slotMinute(deviceKey, date, base);
         return String.format(Locale.US, "%02d:%02d Asia/Ho_Chi_Minh",
-                minuteOfDay / 60, minuteOfDay % 60);
+                minute / 60, minute % 60);
     }
 
     private static boolean networkUsable(Context context) {
