@@ -118,7 +118,10 @@ jobs:
               --generate-notes
           fi
 
+      # Foundation rollout only. Future releases must be targeted via the
+      # policy manifest and must not silently update the fleet-wide channel.
       - name: Publish fixed Launcher update channel
+        if: steps.version.outputs.version == '0.3.25'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
