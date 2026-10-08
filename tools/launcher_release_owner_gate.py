@@ -115,6 +115,7 @@ def main() -> None:
     p.add_argument("--output", type=Path, help="Write approved rollout descriptor")
     p.add_argument("--finalize", type=Path, help="Fill SHA-256 after APK signing")
     p.add_argument("--apk", type=Path, help="Signed APK, used with --finalize")
+    p.add_argument("--receipt", type=Path, help="Public receipt without device keys")
     args = p.parse_args()
     if args.finalize:
         if not args.apk or not args.apk.is_file() or not args.finalize.is_file():
@@ -126,6 +127,24 @@ def main() -> None:
         if not SHA256.fullmatch(approval["sha256"]):
             raise SystemExit("SIGNATURE_APK_SHA_INVALID")
         args.finalize.write_text(json.dumps(approval, indent=2, ensure_ascii=False) + "\n")
+        if not args.receipt:
+            p.error("Signed releases require --receipt")
+        public = {
+            "schema": "supra.launcher.owner_receipt.v1",
+            "version": approval["version"],
+            "version_code": approval["version_code"],
+            "scope": approval["scope"],
+            "target_count": len(approval["targets"]),
+            "scope_sha256": approval["scope_sha256"],
+            "sha256": approval["sha256"],
+            "required": approval["required"],
+            "policy_id": approval["policy_id"],
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "approval_run": approval["approval_run"],
+            "rollout_enabled": False,
+        }
+        args.receipt.write_text(json.dumps(public, indent=2) + "\n")
         print("OWNER_APPROVED_SCOPED_APK_DIGEST=PASS")
         return
 
