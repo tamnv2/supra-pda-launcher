@@ -32,3 +32,21 @@ Chỉ bổ sung đọc và ghi log. **Chưa thay nguồn phần trăm pin trên 
 Phần trăm pin là ước lượng do bộ quản lý năng lượng cung cấp; không có quyền đọc cảm biến độc lập thần kỳ. Dữ liệu nguồn gốc giống nhau không thể tự xác minh chéo. Không can thiệp firmware, reset/calibrate pin từ ứng dụng hoặc xin quyền root để thử nghiệm.
 
 **Không nâng version/release trên nhánh này**: bản cập nhật đang bị bắt buộc cho các PDA. Cần qua CI và một máy DT50 lỗi trước khi phát hành rộng.
+
+
+## Log bổ sung để xây dựng bản thử nghiệm v0.3.25
+
+| Nguồn | Dữ liệu thu thập |
+| --- | --- |
+| Android Broadcast | raw level/scale, %, trạng thái sạc, plugged, nhiệt độ, điện áp, health, cờ pin yếu |
+| BatteryManager | %, dòng hiện tại/trung bình, điện lượng còn lại (nếu có), charge counter, trạng thái sạc, thời gian sạc còn lại (nếu có) |
+| Sysfs DT50 | từng node pin; capacity, status, voltage_now/avg/ocv, current_now/avg, charge_now/full/full_design, energy_now/full/full_design, nhiệt độ, cycle_count |
+| Đối chiếu | ba nguồn %, node sysfs, mức chênh, cờ bất đồng; không coi độc lập khi cùng fuel gauge |
+| Diễn tiến | số phút % đứng yên, đổi cắm/rút sạc, khoảng biến động điện áp, thay đổi charge counter, nghi vấn pin đứng 52% |
+| Firmware DT50 | build ID, display, incremental, board, model, hardware; không thu IMEI/MEID/serial thô |
+
+Đã giới hạn thời gian gọi dumpsys battery để tránh làm treo hàng đợi log. Không thêm API request, quyền hệ thống hay lịch polling mới. Giữ chu kỳ lấy mẫu khoảng 15 phút (do JobScheduler có thể trễ), mẫu đầy đủ khoảng mỗi giờ và upload dồn trong cửa sổ 21:55–22:00 (giờ Việt Nam).
+
+Luồng truyền hiện tại: Launcher lưu log local -> inventory-beta.supra.cc.cd/api/pda/launcher/logs -> Inventory service lưu tạm và archive qua Google Drive -> Logs/YYYY-MM-DD. Trên Drive tìm file có tên tiền tố scheduled_android_launcher-, xem reason launcher_daily_diagnostic và model DT50. Nếu không thấy, kiểm tra cả hai thư mục cùng tên ngày vì Drive hiện còn tình trạng trùng thư mục. Không ghi nhận dữ liệu nhạy cảm hay đánh giá % pin thật bằng công thức từ điện áp.
+
+Cần phê duyệt trước khi nâng phiên bản 0.3.25/phát hành APK. Trước hết chỉ cài trên một DT50 đang lỗi, ghi log khi rút sạc/sạc lại, xác minh phần trăm vẫn 52% trong khi cảm biến khác thay đổi. Không đổi màn hình pin hoặc cảnh báo pin yếu.
