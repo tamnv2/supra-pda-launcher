@@ -2,13 +2,13 @@
 
 ## Phạm vi
 
-Chỉ bổ sung đọc và ghi log. **Chưa thay nguồn phần trăm pin trên màn hình Launcher**, không sửa cảnh báo pin yếu hay logic sạc. Không thay đổi API, tần suất upload, quyền Android hoặc lập lịch JobScheduler.
+Chỉ bổ sung đọc và ghi log. **Chưa thay nguồn phần trăm pin trên màn hình Launcher**, không sửa cảnh báo pin yếu hay logic sạc. Bản v0.3.25 dùng chung; lịch upload thay bằng hai mốc 13:30/21:30 (+/-15 phút) và sampling JobScheduler chỉ còn trên DT50.
 
-- Mỗi mẫu log khoảng 15 phút đang có: ghi `ACTION_BATTERY_CHANGED`, `BatteryManager`, dữ liệu pin sysfs gọn trên dòng DT50 và so sánh phần trăm giữa các nguồn.
-- Mỗi 3 giờ với DT50 và khi khởi chạy: giữ mẫu sysfs/dumpsys chi tiết, bổ sung trường điện áp/dung lượng (nếu firmware cấp); các máy khác giữ chu kỳ khoảng 1 giờ.
+- Mỗi mẫu log định kỳ khoảng 3 giờ trên DT50: ghi `ACTION_BATTERY_CHANGED`, `BatteryManager`, dữ liệu pin sysfs gọn trên dòng DT50 và so sánh phần trăm giữa các nguồn.
+- Khoảng mỗi 3 giờ với DT50 và khi khởi chạy: mẫu sysfs/dumpsys chi tiết và trường điện áp/dung lượng (nếu firmware cung cấp). Các model khác hoàn toàn không gửi dữ liệu pin.
 - `battery_trend`: thời gian % không đổi, mức thay đổi điện áp tính bằng mV, việc đổi trạng thái sạc khi % vẫn giữ nguyên. `possible_stale_percentage` chỉ là **nghi vấn**, không phải đo được % pin thực tế.
 - `source_comparison`: `broadcast_percent`, `manager_percent`, `sysfs_percent` (khi đọc được), `sources_disagree`. `independent_accuracy_verified=false` để tránh dùng nhầm số liệu tương quan thành thẩm định chính xác.
-- File log ở local, dùng chung gói gửi một lần trong cửa sổ cuối ngày và cơ chế retry của Launcher. Không gửi mới sau mỗi mẫu 15 phút.
+- File log ở local, tạo hai phân đoạn gửi theo lịch 13:30 và 21:30 (+/-15 phút theo từng PDA), có one-shot retry khi cần. Không upload theo mỗi mẫu.
 
 ## Cách kiểm tra một máy lỗi
 
@@ -31,7 +31,7 @@ Chỉ bổ sung đọc và ghi log. **Chưa thay nguồn phần trăm pin trên 
 
 Phần trăm pin là ước lượng do bộ quản lý năng lượng cung cấp; không có quyền đọc cảm biến độc lập thần kỳ. Dữ liệu nguồn gốc giống nhau không thể tự xác minh chéo. Không can thiệp firmware, reset/calibrate pin từ ứng dụng hoặc xin quyền root để thử nghiệm.
 
-**Không nâng version/release trên nhánh này**: bản cập nhật đang bị bắt buộc cho các PDA. Cần qua CI và một máy DT50 lỗi trước khi phát hành rộng.
+**Không nâng version/release trên nhánh này**: bản v0.3.25 sẽ là nền tảng dùng chung và chưa phát hành khi chưa đạt CI/kiểm thử. Cần qua CI và một máy DT50 lỗi trước khi phát hành rộng.
 
 
 ## Log bổ sung để xây dựng bản thử nghiệm v0.3.25
@@ -45,8 +45,8 @@ Phần trăm pin là ước lượng do bộ quản lý năng lượng cung cấ
 | Diễn tiến | số phút % đứng yên, đổi cắm/rút sạc, khoảng biến động điện áp, thay đổi charge counter, nghi vấn pin đứng 52% |
 | Firmware DT50 | build ID, display, incremental, board, model, hardware; không thu IMEI/MEID/serial thô |
 
-Đã giới hạn thời gian gọi dumpsys battery để tránh làm treo hàng đợi log. Không thêm API request, quyền hệ thống hay lịch polling mới. Giữ chu kỳ lấy mẫu khoảng 15 phút (do JobScheduler có thể trễ), mẫu đầy đủ khoảng mỗi 3 giờ trên DT50 (các máy khác giữ 1 giờ) và upload dồn trong cửa sổ 21:55–22:00 (giờ Việt Nam).
+Đã giới hạn thời gian gọi dumpsys battery để tránh làm treo hàng đợi log. Không thêm API request, quyền hệ thống hay lịch polling mới. Giữ chu kỳ lấy mẫu khoảng 3 giờ chỉ trên DT50 (JobScheduler có thể trễ), dữ liệu chuyển trạng thái sạc ghi theo sự kiện; upload theo hai cửa sổ 13:15–13:45 và 21:15–21:45 (giờ Việt Nam).
 
-Luồng truyền hiện tại: Launcher lưu log local -> inventory-beta.supra.cc.cd/api/pda/launcher/logs -> Inventory service lưu tạm và archive qua Google Drive -> Logs/YYYY-MM-DD. Trên Drive tìm file có tên tiền tố scheduled_android_launcher-, xem reason launcher_daily_diagnostic và model DT50. Nếu không thấy, kiểm tra cả hai thư mục cùng tên ngày vì Drive hiện còn tình trạng trùng thư mục. Không ghi nhận dữ liệu nhạy cảm hay đánh giá % pin thật bằng công thức từ điện áp.
+Luồng truyền hiện tại: Launcher lưu log local -> inventory-beta.supra.cc.cd/api/pda/launcher/logs -> Inventory service lưu tạm và archive qua Google Drive -> PDA Management/YYYY-MM-DD. Trên Drive tìm file có tên tiền tố scheduled_android_launcher-, xem reason launcher_daily_diagnostic và model DT50. Nếu không thấy, kiểm tra cả hai thư mục cùng tên ngày vì Drive hiện còn tình trạng trùng thư mục. Không ghi nhận dữ liệu nhạy cảm hay đánh giá % pin thật bằng công thức từ điện áp.
 
-Cần phê duyệt trước khi nâng phiên bản 0.3.25/phát hành APK. Trước hết chỉ cài trên một DT50 đang lỗi, ghi log khi rút sạc/sạc lại, xác minh phần trăm vẫn 52% trong khi cảm biến khác thay đổi. Không đổi màn hình pin hoặc cảnh báo pin yếu.
+Cần kiểm thử và phê duyệt trước khi phát hành rộng v0.3.25. Trước hết thử trên một DT50 đang lỗi, ghi log khi rút sạc/sạc lại, xác minh phần trăm vẫn 52% trong khi cảm biến khác thay đổi. Không đổi màn hình pin hoặc cảnh báo pin yếu.
