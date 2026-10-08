@@ -70,6 +70,9 @@ public class MainActivity extends Activity {
             updateClock();
             updateGuardPauseUi();
             LauncherDiagnostics.tick(MainActivity.this);
+            // Reuse the visible clock tick, but the existing 60-minute cache
+            // prevents any extra network polling or background wakeups.
+            UpdateManager.checkOnLaunch(MainActivity.this);
             long now = System.currentTimeMillis();
             long delay = 60000L - (now % 60000L);
             handler.postDelayed(this, delay);
