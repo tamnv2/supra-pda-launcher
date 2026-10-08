@@ -228,7 +228,11 @@ final class LauncherDiagnostics {
                     long lastFull = prefs.getLong("last_full_sample_at", 0L);
                     boolean full = lastFull <= 0L || now - lastFull >= FULL_SAMPLE_INTERVAL_MS;
                     JSONObject data = new JSONObject();
-                    data.put("battery", captureBattery(context, null, full));
+                    JSONObject batterySample = captureBattery(context, null, full);
+                    data.put("battery", batterySample);
+                    if (isDt50()) {
+                        data.put("battery_trend", trackDt50BatteryTrend(context, batterySample, now));
+                    }
                     if (full) {
                         data.put("system", captureSystemSnapshot(context, false));
                     }
@@ -346,6 +350,7 @@ final class LauncherDiagnostics {
         }
 
         JSONObject out = new JSONObject();
+        out.put("capture_uptime_ms", SystemClock.elapsedRealtime());
         if (battery != null) {
             int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
@@ -360,6 +365,10 @@ final class LauncherDiagnostics {
             broadcast.put("health", battery.getIntExtra(
                     BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
             broadcast.put("plugged", battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                broadcast.put("battery_low_flag",
+                        battery.getBooleanExtra(BatteryManager.EXTRA_BATTERY_LOW, false));
+            }
             broadcast.put("present",
                     battery.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true));
             broadcast.put("temperature_tenths_c",
@@ -383,6 +392,21 @@ final class LauncherDiagnostics {
                     BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
             putIntProperty(properties, "current_average_ua", manager,
                     BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                putIntProperty(properties, "status",
+                        manager, BatteryManager.BATTERY_PROPERTY_STATUS);
+            }
+            try {
+                properties.put("is_charging", manager.isCharging());
+            } catch (Throwable ignored) { }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    long remainingMs = manager.computeChargeTimeRemaining();
+                    if (remainingMs >= 0L) {
+                        properties.put("charge_time_remaining_ms", remainingMs);
+                    }
+                } catch (Throwable ignored) { }
+            }
             try {
                 long energy = manager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER);
                 if (energy != Long.MIN_VALUE) properties.put("energy_counter_nwh", energy);
@@ -396,6 +420,9 @@ final class LauncherDiagnostics {
                     new String[] { "/system/bin/dumpsys", "battery" }, 5000);
             if (!dumpsys.isEmpty()) out.put("dumpsys_battery", dumpsys);
         }
+        // Lightweight local-only probe on DT50. No new HTTP requests or polling jobs.
+        if (isDt50()) out.put("dt50_sysfs_probe", readDt50BatteryProbe());
+        out.put("source_comparison", compareBatterySources(out));
         return out;
     }
 
@@ -419,6 +446,9 @@ final class LauncherDiagnostics {
                 "capacity", "voltage_now", "current_now", "current_avg",
                 "charge_counter", "charge_now", "charge_full", "charge_full_design",
                 "energy_now", "energy_full", "energy_full_design",
+                "voltage_avg", "voltage_ocv", "voltage_min_design",
+                "voltage_max_design", "capacity_level", "charge_type",
+                "time_to_empty_now", "time_to_full_now",
                 "temp", "cycle_count"
         };
 
@@ -436,6 +466,160 @@ final class LauncherDiagnostics {
             }
         }
         return result;
+    }
+
+
+    private static boolean isDt50() {
+        String identity = (Build.MANUFACTURER + " " + Build.MODEL + " "
+                + Build.DEVICE + " " + Build.PRODUCT).toUpperCase(Locale.US);
+        return identity.contains("DT50");
+    }
+
+    // Battery-only sysfs snapshot every normal 15-minute sample on DT50.
+    // The existing full snapshot remains hourly for all devices.
+    private static JSONObject readDt50BatteryProbe() throws Exception {
+        JSONObject result = new JSONObject();
+        File[] supplies = new File("/sys/class/power_supply").listFiles();
+        if (supplies == null) {
+            result.put("_state", "unavailable_or_denied");
+            return result;
+        }
+        Arrays.sort(supplies, Comparator.comparing(File::getName));
+        int found = 0;
+        int readable = 0;
+        String[] fields = new String[] {
+                "type", "capacity", "capacity_level", "status", "health",
+                "present", "voltage_now", "voltage_avg", "voltage_ocv",
+                "current_now", "current_avg", "charge_now", "charge_full",
+                "charge_counter", "energy_now", "energy_full", "temp",
+                "time_to_empty_now", "time_to_full_now"
+        };
+        for (File supply : supplies) {
+            if (!supply.isDirectory()) continue;
+            String name = supply.getName();
+            String lower = name.toLowerCase(Locale.US);
+            String type = readSmallFile(new File(supply, "type"), 32);
+            if (!"battery".equalsIgnoreCase(type)
+                    && !lower.contains("battery") && !lower.contains("bms")) {
+                continue;
+            }
+            found++;
+            if (found > 3) break;
+            JSONObject values = new JSONObject();
+            for (String field : fields) {
+                String value = readSmallFile(new File(supply, field), 48);
+                if (!value.isEmpty()) values.put(field, value);
+            }
+            if (values.length() > 0) {
+                result.put(safeText(name, 48), values);
+                readable++;
+            }
+        }
+        result.put("_battery_supplies_found", found);
+        result.put("_readable_supplies", readable);
+        return result;
+    }
+
+    private static JSONObject compareBatterySources(JSONObject sample) throws Exception {
+        JSONObject comparison = new JSONObject();
+        JSONObject broadcast = sample.optJSONObject("broadcast");
+        JSONObject properties = sample.optJSONObject("properties");
+        int broadcastPercent = broadcast == null ? -1 : broadcast.optInt("percent", -1);
+        int managerPercent = properties == null ? -1
+                : properties.optInt("capacity_percent", -1);
+        if (broadcastPercent >= 0 && broadcastPercent <= 100) {
+            comparison.put("broadcast_percent", broadcastPercent);
+        }
+        if (managerPercent >= 0 && managerPercent <= 100) {
+            comparison.put("manager_percent", managerPercent);
+        }
+        int sysfsPercent = -1;
+        String sysfsName = "";
+        JSONObject probe = sample.optJSONObject("dt50_sysfs_probe");
+        if (probe != null) {
+            JSONArray names = probe.names();
+            if (names != null) {
+                for (int i = 0; i < names.length(); i++) {
+                    String name = names.optString(i);
+                    JSONObject supply = probe.optJSONObject(name);
+                    if (supply == null) continue;
+                    try {
+                        int level = Integer.parseInt(supply.optString("capacity", "").trim());
+                        if (level >= 0 && level <= 100) {
+                            sysfsPercent = level;
+                            sysfsName = name;
+                            break;
+                        }
+                    } catch (NumberFormatException ignored) { }
+                }
+            }
+        }
+        if (sysfsPercent >= 0) {
+            comparison.put("sysfs_percent", sysfsPercent);
+            comparison.put("sysfs_supply", sysfsName);
+        }
+        boolean disagreement = (broadcastPercent >= 0 && managerPercent >= 0
+                && Math.abs(broadcastPercent - managerPercent) > 2)
+                || (broadcastPercent >= 0 && sysfsPercent >= 0
+                && Math.abs(broadcastPercent - sysfsPercent) > 2)
+                || (managerPercent >= 0 && sysfsPercent >= 0
+                && Math.abs(managerPercent - sysfsPercent) > 2);
+        comparison.put("sources_disagree", disagreement);
+        comparison.put("independent_accuracy_verified", false);
+        return comparison;
+    }
+
+    private static JSONObject trackDt50BatteryTrend(
+            Context context, JSONObject sample, long now) throws Exception {
+        JSONObject trend = new JSONObject();
+        JSONObject broadcast = sample.optJSONObject("broadcast");
+        if (broadcast == null) {
+            trend.put("state", "broadcast_unavailable");
+            return trend;
+        }
+        int level = broadcast.optInt("percent", -1);
+        int voltage = broadcast.optInt("voltage_mv", -1);
+        int plugged = broadcast.optInt("plugged", -1);
+        if (level < 0 || level > 100) {
+            trend.put("state", "level_unavailable");
+            return trend;
+        }
+        SharedPreferences prefs = diagPrefs(context);
+        int priorLevel = prefs.getInt("dt50_probe_level", -1);
+        long since = prefs.getLong("dt50_probe_since", 0L);
+        int firstVoltage = prefs.getInt("dt50_probe_voltage_mv", -1);
+        int firstPlugged = prefs.getInt("dt50_probe_plugged", -1);
+        boolean plugChanged = prefs.getBoolean("dt50_probe_plug_changed", false);
+        if (level != priorLevel || since <= 0L || since > now) {
+            since = now;
+            firstVoltage = voltage;
+            firstPlugged = plugged;
+            plugChanged = false;
+        } else if (plugged >= 0 && firstPlugged >= 0 && plugged != firstPlugged) {
+            plugChanged = true;
+        }
+        prefs.edit().putInt("dt50_probe_level", level)
+                .putLong("dt50_probe_since", since)
+                .putInt("dt50_probe_voltage_mv", firstVoltage)
+                .putInt("dt50_probe_plugged", firstPlugged)
+                .putBoolean("dt50_probe_plug_changed", plugChanged)
+                .apply();
+
+        long unchangedMinutes = Math.max(0L, (now - since) / 60000L);
+        trend.put("reported_level_percent", level);
+        trend.put("unchanged_minutes", unchangedMinutes);
+        trend.put("plug_state_changed_while_level_unchanged", plugChanged);
+        int voltageDelta = voltage > 0 && firstVoltage > 0
+                ? voltage - firstVoltage : Integer.MIN_VALUE;
+        if (voltageDelta != Integer.MIN_VALUE) {
+            trend.put("voltage_delta_mv", voltageDelta);
+        }
+        boolean suspicious = unchangedMinutes >= 60
+                && (plugChanged || (voltageDelta != Integer.MIN_VALUE
+                && Math.abs(voltageDelta) >= 150));
+        trend.put("possible_stale_percentage", suspicious);
+        trend.put("estimated_actual_percentage", JSONObject.NULL);
+        return trend;
     }
 
     private static String readSmallFile(File file, int max) {
