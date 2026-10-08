@@ -1306,31 +1306,37 @@ final class LauncherDiagnostics {
     private static void cleanupOldFiles(Context context) {
         File[] files = logDir(context).listFiles();
         if (files == null) return;
-        long now = System.currentTimeMillis();
-        long sentCutoff = now - 7L * 24L * 60L * 60L * 1000L;
-        long unsentCutoff = now - 14L * 24L * 60L * 60L * 1000L;
-
+        final String deviceKey = Prefs.getRegistryDeviceKey(context);
+        final long staleMarkerCutoff = System.currentTimeMillis() - 7L * 24L * 60L * 60L * 1000L;
         for (File file : files) {
             try {
-                if (file.getName().endsWith(".sent")
-                        || file.getName().endsWith(".retry")
-                        || file.getName().endsWith(".closed")) {
-                    if (file.lastModified() < sentCutoff) file.delete();
-                    continue;
-                }
-                if (!file.getName().endsWith(FILE_SUFFIX)) continue;
-                if (sentMarker(file).exists()) {
-                    if (file.lastModified() < sentCutoff) {
-                        file.delete();
+                String name = file.getName();
+                if (name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX)) {
+                    // Old v0.3.24 clients mistakenly wrote .sent for HTTP 200
+                    // even when Drive was DEFERRED. Revalidate historical logs
+                    // that still exist instead of discarding them.
+                    if (sentMarker(file).exists()
+                            && !name.contains("-s1330")
+                            && !name.contains("-s2130")
+                            && deviceKey != null && deviceKey.matches("[a-fA-F0-9]{64}")) {
+                        markBuffered(file, bundleIdFor(file, deviceKey, dateFromFile(file)));
                         sentMarker(file).delete();
-                        retryMarker(file).delete();
-                        closedMarker(file).delete();
                     }
-                } else if (file.lastModified() < unsentCutoff) {
-                    file.delete();
-                    retryMarker(file).delete();
-                    closedMarker(file).delete();
+                    if (sentMarker(file).exists()) {
+                        // Already Drive-verified on v0.3.25. Complete a previous
+                        // interrupted deletion; never clear .sent if file remains.
+                        deleteAfterDriveReceipt(file);
+                    }
+                } else if ((name.endsWith(".retry") || name.endsWith(".closed")
+                        || name.endsWith(".buffered") || name.endsWith(".sent"))
+                        && file.lastModified() < staleMarkerCutoff) {
+                    String suffix = name.substring(name.lastIndexOf('.'));
+                    File parentLog = new File(file.getParentFile(),
+                            name.substring(0, name.length() - suffix.length()));
+                    if (!parentLog.exists()) file.delete();
                 }
+                // NEVER auto-delete an unsent JSONL because it is 14 days old.
+                // If Drive is unavailable, data must survive until confirmed.
             } catch (Throwable ignored) { }
         }
     }
