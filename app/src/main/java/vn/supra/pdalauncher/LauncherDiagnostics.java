@@ -584,8 +584,8 @@ final class LauncherDiagnostics {
         return identity.contains("DT50");
     }
 
-    // Battery-only sysfs snapshot every normal 15-minute sample on DT50.
-    // The existing full snapshot remains hourly for all devices.
+    // Battery-only sysfs probe is DT50-specific. Scheduled samples are
+    // at most every three hours; power-state transitions may add event samples.
     private static JSONObject readDt50BatteryProbe() throws Exception {
         JSONObject result = new JSONObject();
         File[] supplies = new File("/sys/class/power_supply").listFiles();
