@@ -1,12 +1,15 @@
 package vn.supra.pdalauncher;
 
 import android.app.ActivityManager;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.app.job.JobInfo;
 import android.app.job.JobScheduler;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -59,14 +62,13 @@ final class LauncherDiagnostics {
     private static final String FILE_SUFFIX = ".jsonl";
     private static final String LATE_SUFFIX = "-late.jsonl";
     private static final long SAMPLE_INTERVAL_MS = 15L * 60L * 1000L;
-    private static final long FULL_SAMPLE_INTERVAL_MS = 60L * 60L * 1000L;
     private static final long DT50_FULL_SAMPLE_INTERVAL_MS = 3L * 60L * 60L * 1000L;
-    private static final long MIN_UPLOAD_CHECK_INTERVAL_MS = 60L * 1000L;
     private static final long MAX_REGULAR_LOG_BYTES = 118_000L;
     private static final long MAX_CRITICAL_LOG_BYTES = 138_000L;
     private static final int MAX_UPLOAD_EVENTS = 180;
     private static final int JOB_ID = 12910323;
-    private static final long JOB_INTERVAL_MS = 15L * 60L * 1000L;
+    private static final int UPLOAD_JOB_ID = 12910330;
+    private static final long JOB_INTERVAL_MS = 3L * 60L * 60L * 1000L;
     private static final TimeZone VN_TZ = TimeZone.getTimeZone("Asia/Ho_Chi_Minh");
     private static final long[] RETRY_DELAYS_MS = new long[] {
             15L * 60L * 1000L,
@@ -85,7 +87,6 @@ final class LauncherDiagnostics {
         return t;
     });
 
-    private static volatile long lastUploadCheckAt;
     private static volatile long lastBatterySignalAt;
     private static volatile int lastBatteryLevel = Integer.MIN_VALUE;
     private static volatile int lastBatteryStatus = Integer.MIN_VALUE;
@@ -96,12 +97,13 @@ final class LauncherDiagnostics {
     static void initialize(Context context) {
         final Context app = context.getApplicationContext();
         scheduleJob(app);
+        scheduleLogAlarms(app);
         installCrashHandler(app);
 
         if (INITIALIZED.compareAndSet(false, true)) {
             IO.execute(() -> {
                 try {
-                    JSONObject data = captureSystemSnapshot(app, true);
+                    JSONObject data = captureSystemSnapshot(app, isDt50());
                     appendEventSync(app, "process_start", data, true);
                     cleanupOldFiles(app);
                     maintenanceSync(app, false);
@@ -112,20 +114,98 @@ final class LauncherDiagnostics {
         }
     }
 
-    static void tick(Context context) {
+    // The clock UI is already updated once per minute. No minute-based log polling.
+    static void tick(Context context) { }
+
+    static void onScheduledLogAlarm(Context context) {
+        scheduleLogAlarms(context.getApplicationContext());
+        scheduleUploadJob(context.getApplicationContext());
+    }
+
+    static void onSystemClockOrBoot(Context context) {
+        scheduleLogAlarms(context.getApplicationContext());
+    }
+
+    private static int slotMinute(String deviceKey, String date, int baseMinutes) {
+        // Deterministic pseudo-random +/- 15 minutes per device, day, and slot.
+        // Each device remains stable after reboot, but fleet distribution varies by day.
+        try {
+            String digest = sha256Hex(deviceKey + "|" + date + "|" + baseMinutes);
+            int value = (int) Long.parseLong(digest.substring(0, 7), 16);
+            return baseMinutes + (value % 31) - 15;
+        } catch (Throwable ignored) {
+            return baseMinutes;
+        }
+    }
+
+    private static void scheduleLogAlarms(Context context) {
+        try {
+            AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (alarms == null) return;
+            String key = Prefs.getRegistryDeviceKey(context);
+            if (key == null || !key.matches("[a-fA-F0-9]{64}")) {
+                key = "unregistered-" + android.os.Build.MODEL;
+            }
+            for (int slot : new int[] { 13 * 60 + 30, 21 * 60 + 30 }) {
+                Calendar when = Calendar.getInstance(VN_TZ);
+                String date = dateKey(when.getTime());
+                int offsetMinutes = slotMinute(key, date, slot);
+                when.set(Calendar.HOUR_OF_DAY, offsetMinutes / 60);
+                when.set(Calendar.MINUTE, offsetMinutes % 60);
+                when.set(Calendar.SECOND, 0);
+                when.set(Calendar.MILLISECOND, 0);
+                if (when.getTimeInMillis() <= System.currentTimeMillis()) {
+                    when.add(Calendar.DAY_OF_YEAR, 1);
+                    date = dateKey(when.getTime());
+                    offsetMinutes = slotMinute(key, date, slot);
+                    when.set(Calendar.HOUR_OF_DAY, offsetMinutes / 60);
+                    when.set(Calendar.MINUTE, offsetMinutes % 60);
+                }
+                Intent intent = new Intent(context, LauncherLogAlarmReceiver.class);
+                intent.setAction("vn.supra.pdalauncher.LOG_UPLOAD_" + slot);
+                PendingIntent pending = PendingIntent.getBroadcast(context, slot, intent,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                if (android.os.Build.VERSION.SDK_INT >= 31 && !alarms.canScheduleExactAlarms()) {
+                    alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when.getTimeInMillis(), pending);
+                } else {
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when.getTimeInMillis(), pending);
+                }
+            }
+        } catch (Throwable error) {
+            recordOperationalEvent(context, "log_alarm_schedule_error", error.getClass().getSimpleName());
+        }
+    }
+
+    private static void scheduleUploadJob(Context context) {
+        try {
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (scheduler == null) return;
+            JobInfo job = new JobInfo.Builder(UPLOAD_JOB_ID,
+                    new ComponentName(context, LauncherDiagnosticJobService.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setOverrideDeadline(15L * 60L * 1000L)
+                    .build();
+            scheduler.schedule(job);
+        } catch (Throwable error) {
+            recordOperationalEvent(context, "upload_job_schedule_error", error.getClass().getSimpleName());
+        }
+    }
+
+    static void runScheduledUpload(Context context) {
         final Context app = context.getApplicationContext();
-        long now = System.currentTimeMillis();
-        Calendar calendar = Calendar.getInstance(VN_TZ);
-        int minuteOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 60
-                + calendar.get(Calendar.MINUTE);
-        boolean nearClose = minuteOfDay >= 21 * 60 + 50
-                && minuteOfDay <= 22 * 60 + 10;
-        long interval = nearClose
-                ? MIN_UPLOAD_CHECK_INTERVAL_MS
-                : 5L * 60L * 1000L;
-        if (now - lastUploadCheckAt < interval) return;
-        lastUploadCheckAt = now;
-        IO.execute(() -> maintenanceSync(app, true));
+        try {
+            JSONObject event = new JSONObject();
+            event.put("scheduled_window", "13:30/21:30 +/-15min Asia/Ho_Chi_Minh");
+            event.put("activated_at", isoNow());
+            appendEventSync(app, "scheduled_upload_wakeup", event, true);
+        } catch (Throwable ignored) { }
+        maintenanceSync(app, true);
+    }
+
+    private static String dateKey(Date date) {
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        f.setTimeZone(VN_TZ);
+        return f.format(date);
     }
 
     static void runPeriodicMaintenance(Context context) {
@@ -133,7 +213,7 @@ final class LauncherDiagnostics {
     }
 
     static void onBatteryChanged(Context context, Intent batteryIntent) {
-        if (batteryIntent == null) return;
+        if (batteryIntent == null || !isDt50()) return;
         int level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
         int scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
         int percent = level >= 0 && scale > 0 ? Math.round(level * 100f / scale) : -1;
@@ -222,13 +302,13 @@ final class LauncherDiagnostics {
 
     private static void maintenanceSync(Context context, boolean allowSample) {
         try {
-            if (allowSample && isOperationalSamplingWindow()) {
+            if (allowSample && isDt50() && isOperationalSamplingWindow()) {
                 SharedPreferences prefs = diagPrefs(context);
                 long now = System.currentTimeMillis();
                 long lastSample = prefs.getLong("last_sample_at", 0L);
                 if (lastSample <= 0L || now - lastSample >= SAMPLE_INTERVAL_MS) {
                     long lastFull = prefs.getLong("last_full_sample_at", 0L);
-                    long fullInterval = isDt50() ? DT50_FULL_SAMPLE_INTERVAL_MS : FULL_SAMPLE_INTERVAL_MS;
+                    long fullInterval = DT50_FULL_SAMPLE_INTERVAL_MS;
                     boolean full = lastFull <= 0L || now - lastFull >= fullInterval;
                     JSONObject data = new JSONObject();
                     JSONObject batterySample = captureBattery(context, null, full);
@@ -320,7 +400,7 @@ final class LauncherDiagnostics {
         result.put("clock", clock);
 
         result.put("network", captureNetwork(context));
-        if (includeBattery) result.put("battery", captureBattery(context, null, true));
+        if (includeBattery && isDt50()) result.put("battery", captureBattery(context, null, true));
         return result;
     }
 
@@ -425,7 +505,7 @@ final class LauncherDiagnostics {
             out.put("properties", properties);
         }
 
-        if (full) {
+        if (full && isDt50()) {
             out.put("power_supply", readPowerSupplySysfs());
             String dumpsys = readCommand(
                     new String[] { "/system/bin/dumpsys", "battery" }, 5000);
@@ -1098,25 +1178,22 @@ final class LauncherDiagnostics {
 
     private static void scheduleJob(Context context) {
         try {
-            JobScheduler scheduler =
-                    (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
             if (scheduler == null) return;
-            JobInfo existing = null;
-            for (JobInfo info : scheduler.getAllPendingJobs()) {
-                if (info.getId() == JOB_ID) {
-                    existing = info;
-                    break;
-                }
+            JobInfo existing = scheduler.getPendingJob(JOB_ID);
+            if (!isDt50()) {
+                if (existing != null) scheduler.cancel(JOB_ID);
+                return;
             }
-            if (existing != null) return;
-
-            JobInfo job = new JobInfo.Builder(
-                    JOB_ID,
+            // Replace the legacy 15-minute periodic sampling with a DT50-only
+            // 3-hour JobScheduler sample; Android can defer this to save power.
+            if (existing != null && existing.getIntervalMillis() == JOB_INTERVAL_MS) return;
+            if (existing != null) scheduler.cancel(JOB_ID);
+            scheduler.schedule(new JobInfo.Builder(JOB_ID,
                     new ComponentName(context, LauncherDiagnosticJobService.class))
                     .setPeriodic(JOB_INTERVAL_MS)
                     .setPersisted(true)
-                    .build();
-            scheduler.schedule(job);
+                    .build());
         } catch (Throwable ignored) { }
     }
 
