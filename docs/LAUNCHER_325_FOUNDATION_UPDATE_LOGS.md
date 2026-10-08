@@ -29,6 +29,19 @@ Owner approved: 2026-10-08. **The main channel remains v0.3.24 until CI, backend
 - After server 30s/device throttling, one-shot deferred JobScheduler drains backlog, retry marker persists exponential backoff, no busy timer.
 - Post to `/api/pda/launcher/logs`. Backend archives to `PDA Management/<YYYY-MM-DD>` under Drive folder `1Gm-O5nl_ITXZJ1SaLDAOeYaYcpmJ16YO`; Inventory/Agent log folder unchanged. Deferred Drive retry preserves the Launcher folder.
 
+## Drive-confirmed deletion and bounded log storage
+
+- Cloudflare `POST /api/pda/launcher/logs` returns `200 DRIVE_SYNCED` **only after Drive acknowledges the uploaded file**; a `202 BUFFERED` is not a Drive receipt.
+- Launcher retains the local `.jsonl` with a persisted `.buffered` marker after a server-only buffer ACK. The next existing upload window uses small `GET /api/pda/launcher/logs/status` to check the matching DeviceKey and bundle ID, rather than re-uploading the full content.
+- Only an explicit `DRIVE_SYNCED` confirmation authorizes local deletion. A local `.sent` marker fences interrupted cleanup and is removed only after the JSONL has gone; legacy v0.3.24 `.sent` files still on disk are revalidated against server receipts.
+- Unsent files are never deleted because they are over 14 days old. Orphan marker files may be cleared after 7 days; the data file survives.
+- A busy slot rotates into `-s1330-pNNN.jsonl` and `-s2130-pNNN.jsonl` segments (up to 140 events / ~70KB per segment) so that no event is silently omitted by the 180-event backend payload limit. An invalid JSONL is retained rather than sending a truncated replacement.
+- DT50's 3-hour sampling job no longer performs upload checks; networking occurs in existing alarm-triggered JobScheduler jobs, bounded server retry jobs, or no more than once per existing scheduled window when a buffer is pending.
+- Lightweight charging-state events on DT50 no longer open dozens of sysfs nodes; the full sysfs/battery source comparison remains available for the 3-hour deep diagnostic sample.
+- Server Drive retry keeps the same `PDA Management/YYYY-MM-DD` destination. Its date comes from the bucket date, not potentially older final event timestamps.
+
+**Risks / physical QA:** Android alarm delivery can slip in Doze; the log arrives as soon as the OS executes the one-shot job with connectivity. If a device remains offline indefinitely, unsent files persist and disk utilization can grow, so physical tests must check backlog size and include a low-space warning instead of silently deleting evidence. Never claim measured battery savings until a physical DT50 and MT90 are compared against v0.3.24.
+
 ## Required validation matrix before deployment
 
 1. CI Java debug+release and Worker TypeScript + governance guards.
