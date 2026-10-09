@@ -35,6 +35,21 @@ require('setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)', diagnostics,
 require('if (required)', update, "mandatory updates preserved")
 require('checkOnLaunch(MainActivity.this)', main, "active Launcher update discovery")
 require('params.getJobId() == 12910330', service, "scheduled upload job wiring")
+# Missed-alarm recovery is HOME-resume-only, bounded to one attempt per
+# Vietnam day/slot, with local pending-file and connectivity preflight.
+require('LauncherDiagnostics.onLauncherForeground(this);', main,
+        "HOME resume invokes missed log alarm catch-up")
+require('preferences.getString("foreground_catchup_window", "")', diagnostics,
+        "catch-up dedupes per Vietnam slot")
+require('isUploadDue(deviceKey, file)', diagnostics,
+        "catch-up skips unfinished log segments")
+require('preferences.edit().putString("foreground_catchup_window", token).apply();', diagnostics,
+        "dedupe is persisted before network upload")
+require('elapsed - lastForegroundLogCheckElapsedAt < 60_000L', diagnostics,
+        "repeated HOME resumes do not repeatedly scan files")
+assert diagnostics.count('static void onLauncherForeground(') == 1
+assert diagnostics.count('static void tick(Context context) { }') == 1
+
 assert 'new Thread(() -> {\n            while (true)' not in diagnostics
 assert '15L * 60L * 1000L;\n    private static final int JOB_ID' not in diagnostics
 
