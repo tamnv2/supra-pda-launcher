@@ -941,8 +941,9 @@ final class LauncherDiagnostics {
         String key = Prefs.getRegistryDeviceKey(context);
         boolean validKey = key != null && key.matches("[a-fA-F0-9]{64}");
         long last = prefs.getLong("upload_last_attempt_at", 0L);
-        String stamp = last <= 0 ? "Chưa có lần thử" :
-                new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US).format(new Date(last));
+        SimpleDateFormat timeFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US);
+        timeFormat.setTimeZone(VN_TZ);
+        String stamp = last <= 0 ? "Chưa có lần thử" : timeFormat.format(new Date(last));
         return "Định danh: " + (validKey ? "Đã có DeviceKey" : "Thiếu DeviceKey") +
                 "\nLog còn trên máy: " + files +
                 "\nĐang chờ Drive: " + buffered +
@@ -1064,6 +1065,7 @@ final class LauncherDiagnostics {
                             if (events.length() >= MAX_UPLOAD_EVENTS) {
                                 // Never silently archive a partial segment and
                                 // delete its untransmitted records.
+                                noteUploadStatus(context, 0, "LOG_SEGMENT_OVER_180_EVENTS");
                                 return UPLOAD_FAILED;
                             }
                             events.put(event);
@@ -1076,11 +1078,13 @@ final class LauncherDiagnostics {
 
             if (invalidLines > 0 || events.length() != totalLines) {
                 // Invalid JSONL remains on-device for repair/manual analysis.
+                noteUploadStatus(context, 0, "INVALID_LOCAL_JSONL");
                 return UPLOAD_FAILED;
             }
             if (events.length() == 0) {
                 // Even a damaged/non-parsable log must be retained until
                 // its contents can be inspected or repaired.
+                noteUploadStatus(context, 0, "EMPTY_LOCAL_JSONL");
                 return UPLOAD_FAILED;
             }
 
@@ -1136,7 +1140,10 @@ final class LauncherDiagnostics {
             body.put("payload", payload);
 
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > 155_000) return UPLOAD_FAILED;
+            if (bytes.length > 155_000) {
+                noteUploadStatus(context, 0, "LOG_PAYLOAD_TOO_LARGE");
+                return UPLOAD_FAILED;
+            }
 
             connection = (HttpURLConnection) new URL(API_URL).openConnection();
             connection.setRequestMethod("POST");
