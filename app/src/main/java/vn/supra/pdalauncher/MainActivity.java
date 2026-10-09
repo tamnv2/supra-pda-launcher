@@ -116,6 +116,7 @@ public class MainActivity extends Activity {
         updateDeviceIdentityUi();
         updateGuardPauseUi();
         DeviceRegistryClient.retryPending(this);
+        LauncherDiagnostics.onLauncherForeground(this);
         UpdateManager.checkOnLaunch(this);
         applyImmersive();
 
