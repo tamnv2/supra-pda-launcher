@@ -135,7 +135,8 @@ final class LauncherDiagnostics {
     // day/slot; the existing server-side device throttle remains authoritative.
     static void onLauncherForeground(Context context) {
         long elapsed = SystemClock.elapsedRealtime();
-        if (elapsed >= lastForegroundLogCheckElapsedAt
+        if (lastForegroundLogCheckElapsedAt > 0L
+                && elapsed >= lastForegroundLogCheckElapsedAt
                 && elapsed - lastForegroundLogCheckElapsedAt < 60_000L) return;
         lastForegroundLogCheckElapsedAt = elapsed;
         final Context app = context.getApplicationContext();
