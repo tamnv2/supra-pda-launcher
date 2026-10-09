@@ -10,13 +10,9 @@ on:
         required: true
         type: string
       rollout_scope:
-        description: "Owner decision: ALL, MODEL, or DEVICE"
+        description: "Enter ALL, MODEL, or DEVICE (explicit owner choice; mobile-friendly)"
         required: true
-        type: choice
-        options:
-          - ALL
-          - MODEL
-          - DEVICE
+        type: string
       rollout_models:
         description: "MODEL only: comma-separated exact Registry models, e.g. DT50 or NLS-MT90"
         required: false
