@@ -190,6 +190,19 @@ public class AdminActivity extends Activity {
                     @Override public void onClick(View v) { showResetDailyPassword(); }
                 }));
 
+        root.addView(section("Nhật ký Launcher"));
+        root.addView(actionRow(android.R.drawable.ic_menu_info_details,
+                "Xem trạng thái gửi log",
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        new AlertDialog.Builder(AdminActivity.this)
+                                .setTitle("Trạng thái log Launcher")
+                                .setMessage(LauncherDiagnostics.uploadStatusText(AdminActivity.this))
+                                .setPositiveButton("Đóng", null)
+                                .show();
+                    }
+                }));
+
         root.addView(section("Cập nhật"));
         root.addView(actionRow(android.R.drawable.ic_popup_sync,
                 "Kiểm tra cập nhật",

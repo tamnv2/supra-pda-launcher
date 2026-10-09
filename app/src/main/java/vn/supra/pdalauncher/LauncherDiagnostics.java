@@ -916,16 +916,63 @@ final class LauncherDiagnostics {
         IO.execute(() -> uploadPendingSync(context));
     }
 
+    // Local-only diagnostic state: never stores payloads, identifiers or credentials.
+    private static void noteUploadStatus(Context context, int httpStatus, String code) {
+        try {
+            diagPrefs(context).edit()
+                    .putLong("upload_last_attempt_at", System.currentTimeMillis())
+                    .putInt("upload_last_http_status", httpStatus)
+                    .putString("upload_last_result", safeText(code, 80))
+                    .apply();
+        } catch (Throwable ignored) { }
+    }
+
+    static String uploadStatusText(Context context) {
+        SharedPreferences prefs = diagPrefs(context);
+        File[] pending = logDir(context).listFiles((dir, name) ->
+                name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX));
+        int files = pending == null ? 0 : pending.length;
+        int buffered = 0;
+        if (pending != null) {
+            for (File file : pending) {
+                if (bufferedMarker(file).exists()) buffered++;
+            }
+        }
+        String key = Prefs.getRegistryDeviceKey(context);
+        boolean validKey = key != null && key.matches("[a-fA-F0-9]{64}");
+        long last = prefs.getLong("upload_last_attempt_at", 0L);
+        SimpleDateFormat timeFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US);
+        timeFormat.setTimeZone(VN_TZ);
+        String stamp = last <= 0 ? "Chưa có lần thử" : timeFormat.format(new Date(last));
+        return "Định danh: " + (validKey ? "Đã có DeviceKey" : "Thiếu DeviceKey") +
+                "\nLog còn trên máy: " + files +
+                "\nĐang chờ Drive: " + buffered +
+                "\nLần thử gần nhất: " + stamp +
+                "\nHTTP: " + prefs.getInt("upload_last_http_status", 0) +
+                "\nKết quả: " + prefs.getString("upload_last_result", "Chưa có dữ liệu") +
+                "\nLịch gửi: 13:15–13:45 và 21:15–21:45 (giờ VN)." +
+                "\nChỉ xoá log khi Drive xác nhận thành công.";
+    }
+
     private static void uploadPendingSync(Context context) {
         if (!UPLOAD_IN_FLIGHT.compareAndSet(false, true)) return;
         try {
             String deviceKey = Prefs.getRegistryDeviceKey(context);
-            if (deviceKey == null || !deviceKey.matches("[a-fA-F0-9]{64}")) return;
-            if (!networkUsable(context)) return;
+            if (deviceKey == null || !deviceKey.matches("[a-fA-F0-9]{64}")) {
+                noteUploadStatus(context, 0, "DEVICE_KEY_NOT_READY");
+                return;
+            }
+            if (!networkUsable(context)) {
+                noteUploadStatus(context, 0, "NETWORK_NOT_READY");
+                return;
+            }
 
             File[] files = logDir(context).listFiles((dir, name) ->
                     name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX));
-            if (files == null || files.length == 0) return;
+            if (files == null || files.length == 0) {
+                noteUploadStatus(context, 0, "NO_LOCAL_LOGS");
+                return;
+            }
             Arrays.sort(files, Comparator.comparing(File::getName));
 
             int uploaded = 0;
@@ -957,7 +1004,14 @@ final class LauncherDiagnostics {
                         scheduleRetry(file);
                     }
                     if (result != RECEIPT_MISSING) {
-                        if (result == UPLOAD_DRIVE_SYNCED) scheduleNextQueuedFile(context, files, file, deviceKey);
+                        if (result == UPLOAD_DRIVE_SYNCED) {
+                            noteUploadStatus(context, 200, "DRIVE_SYNCED_RECEIPT");
+                            scheduleNextQueuedFile(context, files, file, deviceKey);
+                        } else if (result == UPLOAD_BUFFERED) {
+                            noteUploadStatus(context, 202, "SERVER_BUFFERED_NOT_DRIVE");
+                        } else {
+                            noteUploadStatus(context, 0, "DRIVE_RECEIPT_CHECK_FAILED");
+                        }
                         break;
                     }
                 }
@@ -1011,6 +1065,7 @@ final class LauncherDiagnostics {
                             if (events.length() >= MAX_UPLOAD_EVENTS) {
                                 // Never silently archive a partial segment and
                                 // delete its untransmitted records.
+                                noteUploadStatus(context, 0, "LOG_SEGMENT_OVER_180_EVENTS");
                                 return UPLOAD_FAILED;
                             }
                             events.put(event);
@@ -1023,11 +1078,13 @@ final class LauncherDiagnostics {
 
             if (invalidLines > 0 || events.length() != totalLines) {
                 // Invalid JSONL remains on-device for repair/manual analysis.
+                noteUploadStatus(context, 0, "INVALID_LOCAL_JSONL");
                 return UPLOAD_FAILED;
             }
             if (events.length() == 0) {
                 // Even a damaged/non-parsable log must be retained until
                 // its contents can be inspected or repaired.
+                noteUploadStatus(context, 0, "EMPTY_LOCAL_JSONL");
                 return UPLOAD_FAILED;
             }
 
@@ -1083,7 +1140,10 @@ final class LauncherDiagnostics {
             body.put("payload", payload);
 
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > 155_000) return UPLOAD_FAILED;
+            if (bytes.length > 155_000) {
+                noteUploadStatus(context, 0, "LOG_PAYLOAD_TOO_LARGE");
+                return UPLOAD_FAILED;
+            }
 
             connection = (HttpURLConnection) new URL(API_URL).openConnection();
             connection.setRequestMethod("POST");
@@ -1103,7 +1163,22 @@ final class LauncherDiagnostics {
             }
 
             int code = connection.getResponseCode();
-            if (code != 200 && code != 202) return UPLOAD_FAILED;
+            if (code != 200 && code != 202) {
+                String reason = "HTTP_" + code;
+                try (java.io.InputStream errorStream = connection.getErrorStream()) {
+                    if (errorStream != null) {
+                        byte[] raw = new byte[512];
+                        int length = errorStream.read(raw);
+                        if (length > 0) {
+                            String value = new String(raw, 0, length, StandardCharsets.UTF_8);
+                            String error = new JSONObject(value).optString("error", "");
+                            if (error.matches("[A-Z0-9_]{3,70}")) reason += "_" + error;
+                        }
+                    }
+                } catch (Throwable ignored) { }
+                noteUploadStatus(context, code, reason);
+                return UPLOAD_FAILED;
+            }
             JSONObject reply;
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
@@ -1114,11 +1189,17 @@ final class LauncherDiagnostics {
             }
             if (reply.optBoolean("archived", false)
                     && "DRIVE_SYNCED".equals(reply.optString("archive_status", ""))) {
+                noteUploadStatus(context, code, "DRIVE_SYNCED");
                 return UPLOAD_DRIVE_SYNCED;
             }
-            if ("BUFFERED".equals(reply.optString("status", ""))) return UPLOAD_BUFFERED;
+            if ("BUFFERED".equals(reply.optString("status", ""))) {
+                noteUploadStatus(context, code, "SERVER_BUFFERED_NOT_DRIVE");
+                return UPLOAD_BUFFERED;
+            }
+            noteUploadStatus(context, code, "INVALID_SERVER_RECEIPT");
             return UPLOAD_FAILED;
-        } catch (Throwable ignored) {
+        } catch (Throwable error) {
+            noteUploadStatus(context, 0, "UPLOAD_EXCEPTION_" + error.getClass().getSimpleName());
             return UPLOAD_FAILED;
         } finally {
             if (connection != null) connection.disconnect();
