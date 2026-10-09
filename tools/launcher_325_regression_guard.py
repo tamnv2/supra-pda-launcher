@@ -8,6 +8,8 @@ diagnostics = (app / "LauncherDiagnostics.java").read_text()
 update = (app / "UpdateManager.java").read_text()
 main = (app / "MainActivity.java").read_text()
 service = (app / "LauncherDiagnosticJobService.java").read_text()
+manifest = Path("app/src/main/AndroidManifest.xml").read_text()
+
 
 def require(value, source, label):
     assert value in source, f"Missing v0.3.25 contract: {label}"
@@ -32,6 +34,10 @@ require('13 * 60 + 30, 21 * 60 + 30', diagnostics, "two Vietnam windows")
 require('alarms.setExactAndAllowWhileIdle', diagnostics, "OS alarm rather than timer")
 require('setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)', diagnostics,
         "network-constrained JobScheduler")
+require('android.permission.ACCESS_NETWORK_STATE', manifest,
+        "ConnectivityManager.getActiveNetwork is permission-gated on Android 11")
+require('getActiveNetwork()', diagnostics,
+        "Launcher validates network before attempting POST")
 require('if (required)', update, "mandatory updates preserved")
 require('checkOnLaunch(MainActivity.this)', main, "active Launcher update discovery")
 require('params.getJobId() == 12910330', service, "scheduled upload job wiring")
