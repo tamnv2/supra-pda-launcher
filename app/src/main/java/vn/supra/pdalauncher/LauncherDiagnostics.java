@@ -98,6 +98,7 @@ final class LauncherDiagnostics {
         return t;
     });
 
+    private static volatile long lastForegroundLogCheckElapsedAt;
     private static volatile long lastBatterySignalAt;
     private static volatile int lastBatteryLevel = Integer.MIN_VALUE;
     private static volatile int lastBatteryStatus = Integer.MIN_VALUE;
@@ -127,6 +128,59 @@ final class LauncherDiagnostics {
 
     // The clock UI is already updated once per minute. No minute-based log polling.
     static void tick(Context context) { }
+
+    // A warehouse PDA often returns to HOME long after the scheduled OS alarm.
+    // Opportunistically drain missed windows on HOME resume, never by polling.
+    // Network requests are bounded to one manual recovery attempt per Vietnam
+    // day/slot; the existing server-side device throttle remains authoritative.
+    static void onLauncherForeground(Context context) {
+        long elapsed = SystemClock.elapsedRealtime();
+        if (elapsed >= lastForegroundLogCheckElapsedAt
+                && elapsed - lastForegroundLogCheckElapsedAt < 60_000L) return;
+        lastForegroundLogCheckElapsedAt = elapsed;
+        final Context app = context.getApplicationContext();
+        IO.execute(() -> {
+            try {
+                String deviceKey = Prefs.getRegistryDeviceKey(app);
+                if (deviceKey == null || !deviceKey.matches("[a-fA-F0-9]{64}")) return;
+                Calendar clock = Calendar.getInstance(VN_TZ);
+                String day = dateKey(clock.getTime());
+                int minutes = clock.get(Calendar.HOUR_OF_DAY) * 60
+                        + clock.get(Calendar.MINUTE);
+                int first = slotMinute(deviceKey, day, 13 * 60 + 30);
+                int second = slotMinute(deviceKey, day, 21 * 60 + 30);
+                // "prior" recovers older-day logs if the PDA was off during
+                // last night's window; no same-day unfinished segment is sent.
+                String window = minutes >= second ? "evening"
+                        : minutes >= first ? "midday" : "prior";
+                String token = day + "|" + window;
+                SharedPreferences preferences = diagPrefs(app);
+                if (token.equals(preferences.getString("foreground_catchup_window", ""))) return;
+                if (!networkUsable(app)) return;
+                File[] files = logDir(app).listFiles((dir, name) ->
+                        name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX));
+                if (files == null) return;
+                boolean hasDueLog = false;
+                for (File file : files) {
+                    if (!sentMarker(file).exists()
+                            && !dateFromFile(file).isEmpty()
+                            && isUploadDue(deviceKey, file)
+                            && retryDue(file)) {
+                        hasDueLog = true;
+                        break;
+                    }
+                }
+                if (!hasDueLog) return;
+                // Persist before the attempt so repeated HOME visits do not
+                // multiply POST/receipt calls when service or Drive is down.
+                preferences.edit().putString("foreground_catchup_window", token).apply();
+                uploadPendingSync(app);
+            } catch (Throwable error) {
+                noteUploadStatus(app, 0,
+                        "FOREGROUND_CATCHUP_" + error.getClass().getSimpleName());
+            }
+        });
+    }
 
     static void onScheduledLogAlarm(Context context) {
         scheduleLogAlarms(context.getApplicationContext());
